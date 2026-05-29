@@ -1,0 +1,49 @@
+services:
+
+  asterisk:
+    build: ./asterisk
+    container_name: asterisk
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5060:5060/udp"           # SIP signaling (PJSIP)
+      - "8088:8088"               # ARI HTTP / WebSocket
+      - "10000-10100:10000-10100/udp"  # RTP media streams
+    volumes:
+      - ./asterisk/etc/asterisk:/etc/asterisk   # live-reload config without rebuild
+      - asterisk_spool:/var/spool/asterisk       # voicemail, recordings
+      - asterisk_log:/var/log/asterisk
+    networks:
+      - pbx
+
+  ht812_api:
+    build: ./ht812_api
+    container_name: ht812_api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backups:/backups          # config snapshot storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # reach HT812V2 on LAN
+    networks:
+      - pbx
+
+  ari_app:
+    build: ./ari_app
+    container_name: ari_app
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - asterisk
+    networks:
+      - pbx
+
+volumes:
+  asterisk_spool:
+  asterisk_log:
+
+networks:
+  pbx:
+    driver: bridge
