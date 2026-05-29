@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .ht812_client import HT812AuthError, HT812Client, HT812Error
-from .models import (
+from ht812_client import HT812AuthError, HT812Client, HT812Error
+from models import (
     ActionResponse,
     GetValuesResponse,
     PatchConfigRequest,

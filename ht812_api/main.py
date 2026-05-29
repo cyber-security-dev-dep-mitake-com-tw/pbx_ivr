@@ -2,8 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from .ht812_client import HT812Client
-from .router import router
+from ht812_client import HT812Client
+from router import router
 
 
 @asynccontextmanager
