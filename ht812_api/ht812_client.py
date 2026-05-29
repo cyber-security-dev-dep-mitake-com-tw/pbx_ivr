@@ -4,8 +4,9 @@ Low-level async HTTP client for the Grandstream HT812V2 CGI API.
 Reverse-engineered from firmware 3.7.5 (lighttpd/1.4.69, Vue SPA frontend).
 
 Auth flow:
-  POST /cgi-bin/dologin  { username, P2: password }   (application/x-www-form-urlencoded)
+  POST /cgi-bin/dologin  { username, P2: base64(password) }   (application/x-www-form-urlencoded)
     → { response: "success", body: { role, session_token, default_auth, oem_id } }
+  NOTE: The frontend base64-encodes the password before sending. Verified via browser DevTools.
   session_token is appended to every subsequent request:
     POST: &session_token=<token>
     GET:  ?session_token=<token>&_nocache_=<epoch_ms>
@@ -23,6 +24,7 @@ Key endpoints:
   GET  /status/netStatus           ?session_token=  → IP, DNS, DHCP info
 """
 
+import base64
 import os
 import time
 from datetime import datetime, timezone
