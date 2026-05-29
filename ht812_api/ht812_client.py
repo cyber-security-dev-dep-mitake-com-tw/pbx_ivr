@@ -64,9 +64,10 @@ class HT812Client:
     # ------------------------------------------------------------------ auth
 
     async def _login(self) -> None:
+        p2 = base64.b64encode(_ADMIN_PASS.encode()).decode()
         r = await self._http.post(
             "/cgi-bin/dologin",
-            content=f"username={_ADMIN_USER}&P2={_ADMIN_PASS}",
+            content=f"username={_ADMIN_USER}&P2={p2}",
         )
         r.raise_for_status()
         data = r.json()
