@@ -1,24 +1,34 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any
 
 
 class PatchConfigRequest(BaseModel):
     params: dict[str, str]
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "params": {
+                    "P47": "sip.example.com",
+                    "P48": "5060",
+                }
+            }
+        }
+    }
 
-class SipPortStatus(BaseModel):
-    port: int
-    registered: bool
-    user: Optional[str] = None
-    server: Optional[str] = None
-    raw: Optional[str] = None
 
-
-class SipStatusResponse(BaseModel):
-    port1: SipPortStatus
-    port2: SipPortStatus
+class GetValuesResponse(BaseModel):
+    values: dict[str, Any]
 
 
 class ActionResponse(BaseModel):
     success: bool
     message: str
+
+
+class PortStatusResponse(BaseModel):
+    raw: Any
+
+
+class SystemInfoResponse(BaseModel):
+    raw: Any

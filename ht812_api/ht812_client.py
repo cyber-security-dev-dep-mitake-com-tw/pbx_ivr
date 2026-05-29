@@ -1,15 +1,30 @@
 """
 Low-level async HTTP client for the Grandstream HT812V2 CGI API.
 
+Reverse-engineered from firmware 3.7.5 (lighttpd/1.4.69, Vue SPA frontend).
+
 Auth flow:
-  1. GET  /cgi-bin/loginrealm  -> one-time challenge token
-  2. POST /cgi-bin/login       -> username + MD5(password+token) -> session cookie
-  3. All subsequent calls reuse the session cookie until it expires.
+  POST /cgi-bin/dologin  { username, P2: password }   (application/x-www-form-urlencoded)
+    → { response: "success", body: { role, session_token, default_auth, oem_id } }
+  session_token is appended to every subsequent request:
+    POST: &session_token=<token>
+    GET:  ?session_token=<token>&_nocache_=<epoch_ms>
+
+Key endpoints:
+  GET  /cgi-bin/download_cfg_xml   ?session_token=  → full config XML
+  GET  /cgi-bin/export_cfg         ?session_token=  → binary config export
+  POST /cgi-bin/api.values.get     { request: "P47,P48,...", session_token }  → P-values
+  POST /cgi-bin/api.values.post    { P47: val, ..., update|apply: "1", session_token }
+  POST /cgi-bin/rs                 { session_token }  → reboot system
+  POST /cgi-bin/unit_reset         { reset_type: "0"|"1"|"2", session_token }
+       0 = ISP data, 1 = VoIP data, 2 = full factory reset
+  GET  /status/portStatus          ?session_token=  → FXS port SIP registration
+  GET  /status/systemInfo          ?session_token=  → firmware, MAC, uptime
+  GET  /status/netStatus           ?session_token=  → IP, DNS, DHCP info
 """
 
-import hashlib
 import os
-import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,95 +41,159 @@ class HT812Error(Exception):
     pass
 
 
+class HT812AuthError(HT812Error):
+    pass
+
+
 class HT812Client:
     def __init__(self) -> None:
-        self._client = httpx.AsyncClient(
+        self._http = httpx.AsyncClient(
             base_url=_HT812_HOST,
-            verify=False,  # self-signed cert on device
-            timeout=15.0,
+            verify=False,         # device uses self-signed TLS cert
+            timeout=20.0,
             follow_redirects=True,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+            },
         )
-        self._cookie: dict = {}
+        self._session_token: str = ""
 
-    async def _get_challenge(self) -> str:
-        r = await self._client.get("/cgi-bin/loginrealm")
-        r.raise_for_status()
-        # Response is plain text: the challenge token
-        return r.text.strip()
+    # ------------------------------------------------------------------ auth
 
     async def _login(self) -> None:
-        token = await self._get_challenge()
-        hashed = hashlib.md5((_ADMIN_PASS + token).encode()).hexdigest()
-        r = await self._client.post(
-            "/cgi-bin/login",
-            data={"username": _ADMIN_USER, "password": hashed},
+        r = await self._http.post(
+            "/cgi-bin/dologin",
+            content=f"username={_ADMIN_USER}&P2={_ADMIN_PASS}",
         )
         r.raise_for_status()
-        if "session" not in str(r.cookies).lower() and r.status_code not in (200, 302):
-            raise HT812Error(f"Login failed: {r.text[:200]}")
-        self._cookie = dict(r.cookies)
-
-    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
-        """Make an authenticated request, retrying once if session expired."""
-        for attempt in range(2):
-            r = await self._client.request(
-                method, path, cookies=self._cookie, **kwargs
+        data = r.json()
+        if data.get("response") != "success":
+            body = data.get("body", "")
+            raise HT812AuthError(
+                f"Login failed: {body}. "
+                "Check HT812_ADMIN_PASS in .env — 'remain<N>' means N attempts left before lockout."
             )
-            if r.status_code == 401 or "login" in r.url.path.lower() and attempt == 0:
-                await self._login()
-                continue
-            r.raise_for_status()
-            return r
-        raise HT812Error("Authentication failed after retry")
+        self._session_token = data["body"]["session_token"]
 
-    async def get_config(self) -> str:
-        """Export full device config as XML string, also saves a timestamped backup."""
-        r = await self._request("GET", "/cgi-bin/api-get_config")
+    async def _ensure_auth(self) -> None:
+        if not self._session_token:
+            await self._login()
+
+    # ------------------------------------------------------------------ request helpers
+
+    def _post_data(self, extra: dict | None = None) -> str:
+        """Build URL-encoded form body with session_token appended."""
+        parts = {**(extra or {}), "session_token": self._session_token}
+        return "&".join(f"{k}={v}" for k, v in parts.items())
+
+    def _get_params(self, extra: dict | None = None) -> dict:
+        """Build GET query params dict with session_token and cache-buster."""
+        return {
+            **(extra or {}),
+            "session_token": self._session_token,
+            "_nocache_": str(int(time.time() * 1000)),
+        }
+
+    async def _post(self, path: str, data: dict | None = None) -> dict:
+        await self._ensure_auth()
+        r = await self._http.post(path, content=self._post_data(data))
+        r.raise_for_status()
+        body = r.json()
+        if isinstance(body, dict) and body.get("response") == "error":
+            if body.get("body") == "authentication required":
+                # Session expired — re-login once
+                self._session_token = ""
+                await self._login()
+                r = await self._http.post(path, content=self._post_data(data))
+                r.raise_for_status()
+                body = r.json()
+        return body
+
+    async def _get(self, path: str, params: dict | None = None) -> httpx.Response:
+        await self._ensure_auth()
+        r = await self._http.get(path, params=self._get_params(params))
+        if r.status_code == 401 or (
+            r.headers.get("content-type", "").startswith("text/html")
+            and "login" in r.text.lower()[:500]
+        ):
+            self._session_token = ""
+            await self._login()
+            r = await self._http.get(path, params=self._get_params(params))
+        r.raise_for_status()
+        return r
+
+    # ------------------------------------------------------------------ public API
+
+    async def get_config_xml(self) -> str:
+        """Download full config as XML; also writes a timestamped backup."""
+        r = await self._get("/cgi-bin/download_cfg_xml")
         xml = r.text
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         (_BACKUP_DIR / f"ht812_config_{ts}.xml").write_text(xml)
         return xml
 
-    async def patch_config(self, params: dict[str, str]) -> bool:
-        """Push key-value config params to the device (Grandstream P-value style)."""
-        r = await self._request("POST", "/cgi-bin/update", data=params)
-        return r.status_code == 200
+    async def get_values(self, p_keys: list[str]) -> dict:
+        """Read specific P-value keys. e.g. ['P47', 'P48', 'P52']"""
+        result = await self._post(
+            "/cgi-bin/api.values.get",
+            {"request": ",".join(p_keys)},
+        )
+        # Response: {"response":"success","body":{"P47":"sip.example.com",...}}
+        return result.get("body", result)
+
+    async def patch_config(self, params: dict[str, str], apply: bool = True) -> bool:
+        """
+        Write P-value settings.
+        apply=True  → immediately active (most settings).
+        apply=False → staged only, call apply_config() separately.
+        """
+        flag = "apply" if apply else "update"
+        result = await self._post(
+            "/cgi-bin/api.values.post",
+            {**params, flag: "1"},
+        )
+        return result.get("response") == "success"
+
+    async def apply_config(self) -> bool:
+        """Commit staged changes (use after patch_config(apply=False))."""
+        result = await self._post("/cgi-bin/api.values.post", {"apply": "1"})
+        return result.get("response") == "success"
 
     async def reboot(self) -> bool:
-        r = await self._request("POST", "/cgi-bin/reboot")
-        return r.status_code == 200
+        """Reboot the device. It will be unreachable for ~30 seconds."""
+        result = await self._post("/cgi-bin/rs")
+        return result.get("response") == "success"
 
-    async def factory_reset(self) -> bool:
-        r = await self._request("POST", "/cgi-bin/factory_reset")
-        return r.status_code == 200
-
-    async def get_sip_status(self) -> dict:
+    async def factory_reset(self, reset_type: str = "2") -> bool:
         """
-        Returns registration status for both FXS ports.
-        The /cgi-bin/api-get_accounts response is device-firmware-dependent;
-        we parse the raw text and expose it alongside structured fields.
+        Factory reset.
+        reset_type: "0"=ISP data only, "1"=VoIP data only, "2"=full reset (default).
         """
-        r = await self._request("GET", "/cgi-bin/api-get_accounts")
-        raw = r.text
+        result = await self._post("/cgi-bin/unit_reset", {"reset_type": reset_type})
+        return result.get("response") == "success"
 
-        def _parse_port(raw: str, port_index: int) -> dict:
-            # Grandstream responses use patterns like "P{n}=value" or JSON-ish text
-            registered = bool(re.search(rf"port{port_index}.*?registered", raw, re.I))
-            user_match = re.search(rf"(?:user|account){port_index}[=:]\s*(\S+)", raw, re.I)
-            server_match = re.search(rf"(?:server|sip){port_index}[=:]\s*(\S+)", raw, re.I)
-            return {
-                "port": port_index,
-                "registered": registered,
-                "user": user_match.group(1) if user_match else None,
-                "server": server_match.group(1) if server_match else None,
-                "raw": raw[:500],
-            }
+    async def get_port_status(self) -> dict:
+        """SIP registration status for FXS port 1 and port 2."""
+        r = await self._get("/status/portStatus")
+        return r.json()
 
-        return {
-            "port1": _parse_port(raw, 1),
-            "port2": _parse_port(raw, 2),
-        }
+    async def get_system_info(self) -> dict:
+        """Firmware version, MAC, model, uptime."""
+        r = await self._get("/status/systemInfo")
+        return r.json()
+
+    async def get_net_status(self) -> dict:
+        """IP address, DHCP, DNS, gateway info."""
+        r = await self._get("/status/netStatus")
+        return r.json()
+
+    async def logout(self) -> None:
+        if self._session_token:
+            await self._http.post("/cgi-bin/dologout", content=self._post_data())
+            self._session_token = ""
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self.logout()
+        await self._http.aclose()

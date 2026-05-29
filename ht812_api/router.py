@@ -1,8 +1,14 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .ht812_client import HT812Client, HT812Error
-from .models import ActionResponse, PatchConfigRequest, SipStatusResponse
+from .ht812_client import HT812AuthError, HT812Client, HT812Error
+from .models import (
+    ActionResponse,
+    GetValuesResponse,
+    PatchConfigRequest,
+    PortStatusResponse,
+    SystemInfoResponse,
+)
 
 router = APIRouter(prefix="/ht812", tags=["HT812V2"])
 
@@ -11,51 +17,114 @@ def _client(request: Request) -> HT812Client:
     return request.app.state.ht812
 
 
-@router.get("/config", response_class=Response, responses={200: {"content": {"application/xml": {}}}})
+def _handle(e: Exception) -> HTTPException:
+    if isinstance(e, HT812AuthError):
+        return HTTPException(401, str(e))
+    return HTTPException(502, str(e))
+
+
+# ------------------------------------------------------------------ config
+
+@router.get(
+    "/config",
+    response_class=Response,
+    responses={200: {"content": {"application/xml": {}}}},
+    summary="Export full config as XML (also saves timestamped backup)",
+)
 async def get_config(request: Request):
-    """Export full device config as XML (also writes a timestamped backup file)."""
     try:
-        xml = await _client(request).get_config()
+        xml = await _client(request).get_config_xml()
     except HT812Error as e:
-        raise HTTPException(502, str(e))
+        raise _handle(e)
     return Response(content=xml, media_type="application/xml")
 
 
-@router.patch("/config", response_model=ActionResponse)
-async def patch_config(request: Request, body: PatchConfigRequest):
-    """Push P-value key/value pairs to the device (e.g. {"P47": "sip.example.com"})."""
+@router.get(
+    "/values",
+    response_model=GetValuesResponse,
+    summary="Read specific P-value settings",
+)
+async def get_values(
+    request: Request,
+    keys: str = Query(..., description="Comma-separated P-value keys, e.g. P47,P48,P52"),
+):
     try:
-        ok = await _client(request).patch_config(body.params)
+        values = await _client(request).get_values(keys.split(","))
     except HT812Error as e:
-        raise HTTPException(502, str(e))
-    return ActionResponse(success=ok, message="Config updated" if ok else "Update returned non-200")
+        raise _handle(e)
+    return GetValuesResponse(values=values)
 
 
-@router.post("/reboot", response_model=ActionResponse)
+@router.patch(
+    "/config",
+    response_model=ActionResponse,
+    summary="Write P-value settings (apply=true commits immediately)",
+)
+async def patch_config(
+    request: Request,
+    body: PatchConfigRequest,
+    apply: bool = Query(True, description="Apply immediately vs stage only"),
+):
+    try:
+        ok = await _client(request).patch_config(body.params, apply=apply)
+    except HT812Error as e:
+        raise _handle(e)
+    return ActionResponse(success=ok, message="Config updated" if ok else "Non-success response from device")
+
+
+# ------------------------------------------------------------------ actions
+
+@router.post("/reboot", response_model=ActionResponse, summary="Reboot the device (~30s downtime)")
 async def reboot(request: Request):
-    """Trigger a device reboot. Device will be unreachable for ~30 seconds."""
     try:
         ok = await _client(request).reboot()
     except HT812Error as e:
-        raise HTTPException(502, str(e))
-    return ActionResponse(success=ok, message="Reboot initiated" if ok else "Reboot returned non-200")
+        raise _handle(e)
+    return ActionResponse(success=ok, message="Reboot initiated" if ok else "Non-success response from device")
 
 
-@router.post("/factory-reset", response_model=ActionResponse)
-async def factory_reset(request: Request):
-    """Trigger a factory reset. ALL device settings will be erased."""
+@router.post(
+    "/factory-reset",
+    response_model=ActionResponse,
+    summary="Factory reset (reset_type: 0=ISP, 1=VoIP, 2=full)",
+)
+async def factory_reset(
+    request: Request,
+    reset_type: str = Query("2", description="0=ISP data, 1=VoIP data, 2=full factory reset"),
+):
+    if reset_type not in ("0", "1", "2"):
+        raise HTTPException(400, "reset_type must be 0, 1, or 2")
     try:
-        ok = await _client(request).factory_reset()
+        ok = await _client(request).factory_reset(reset_type)
     except HT812Error as e:
-        raise HTTPException(502, str(e))
-    return ActionResponse(success=ok, message="Factory reset initiated" if ok else "Reset returned non-200")
+        raise _handle(e)
+    return ActionResponse(success=ok, message="Factory reset initiated" if ok else "Non-success response from device")
 
 
-@router.get("/status", response_model=SipStatusResponse)
-async def get_status(request: Request):
-    """Return live SIP registration status for FXS port 1 and port 2."""
+# ------------------------------------------------------------------ status
+
+@router.get("/status/ports", response_model=PortStatusResponse, summary="FXS port SIP registration status")
+async def port_status(request: Request):
     try:
-        data = await _client(request).get_sip_status()
+        data = await _client(request).get_port_status()
     except HT812Error as e:
-        raise HTTPException(502, str(e))
-    return SipStatusResponse(**data)
+        raise _handle(e)
+    return PortStatusResponse(raw=data)
+
+
+@router.get("/status/system", response_model=SystemInfoResponse, summary="Firmware, MAC, model, uptime")
+async def system_info(request: Request):
+    try:
+        data = await _client(request).get_system_info()
+    except HT812Error as e:
+        raise _handle(e)
+    return SystemInfoResponse(raw=data)
+
+
+@router.get("/status/network", response_model=SystemInfoResponse, summary="IP, DHCP, DNS, gateway")
+async def net_status(request: Request):
+    try:
+        data = await _client(request).get_net_status()
+    except HT812Error as e:
+        raise _handle(e)
+    return SystemInfoResponse(raw=data)
