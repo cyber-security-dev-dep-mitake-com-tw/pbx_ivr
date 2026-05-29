@@ -103,28 +103,28 @@ async def factory_reset(
 
 # ------------------------------------------------------------------ status
 
-@router.get("/status/ports", response_model=PortStatusResponse, summary="FXS port SIP registration status")
+@router.get("/status/ports", summary="FXS port SIP registration and hook status")
 async def port_status(request: Request):
     try:
         data = await _client(request).get_port_status()
     except HT812Error as e:
         raise _handle(e)
-    return PortStatusResponse(raw=data)
+    return data
 
 
-@router.get("/status/system", response_model=SystemInfoResponse, summary="Firmware, MAC, model, uptime")
+@router.get("/status/system", summary="Product, vendor info from device")
 async def system_info(request: Request):
     try:
         data = await _client(request).get_system_info()
     except HT812Error as e:
         raise _handle(e)
-    return SystemInfoResponse(raw=data)
+    return data
 
 
-@router.get("/status/network", response_model=SystemInfoResponse, summary="IP, DHCP, DNS, gateway")
+@router.get("/status/network", summary="Network P-values: IP, subnet, gateway")
 async def net_status(request: Request):
     try:
         data = await _client(request).get_net_status()
     except HT812Error as e:
         raise _handle(e)
-    return SystemInfoResponse(raw=data)
+    return data
