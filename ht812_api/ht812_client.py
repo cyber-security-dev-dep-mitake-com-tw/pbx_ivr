@@ -136,6 +136,12 @@ class HT812Client:
                 r = await self._http.post(path, content=body + self._tok())
                 r.raise_for_status()
                 data = r.json()
+        # The device rotates the session token on every apply=1 commit.
+        # Capture it so subsequent calls don't get "invalid session".
+        if isinstance(data, dict):
+            new_token = data.get("body", {})
+            if isinstance(new_token, dict) and new_token.get("token"):
+                self._session_token = new_token["token"]
         return data
 
     async def _get(self, path: str, params: dict | None = None) -> httpx.Response:
