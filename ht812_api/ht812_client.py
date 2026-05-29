@@ -26,6 +26,13 @@ Port status P-values (read via api.values.get):
   P4921/P4922 = SIP registration state (FXS port 1/2)
   P35/P735    = SIP User ID (FXS port 1/2)
   P47/P2312   = SIP server (FXS port 1/2)
+  P130/P830   = SIP transport (0=UDP, 1=TCP, 2=TLS) — per JS bundle opts
+
+SIP auth password P-values (P34 port 1, P734 port 2):
+  API write returns "success" but value is silently ignored by firmware 3.7.5.
+  Passwords MUST be set via the device web UI (https://<device>/). This is a
+  confirmed firmware-level restriction; noInit:1 in the JS bundle confirms the
+  field is write-only and never returned in API reads or the XML backup.
 
 NOTE: /status/systemInfo, /status/portStatus, /status/netStatus are Vue Router SPA
       routes — they return HTML, not JSON. Data must be fetched via cgi-bin API calls.

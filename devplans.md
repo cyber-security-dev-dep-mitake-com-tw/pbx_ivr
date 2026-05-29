@@ -127,11 +127,11 @@ All three Docker services are scaffolded and building. HT812V2 API client has be
 
 | Issue | Priority | Notes |
 |-------|----------|-------|
+| P34/P734 SIP auth password cannot be written via CGI API | **Critical** | API returns `success` but silently ignores password fields. Must set via web UI (https://192.168.0.160 → Account → FXS Port 1/2 → SIP Auth Password). One-time manual step. |
 | `/status/portStatus` response schema unknown | High | Need to log real response once auth is working |
 | `ari_app` has no retry on ARI HTTP errors | Medium | Add exponential backoff on `_call()` |
 | AGI `wait_digit()` ASCI code parsing fragile | Low | Asterisk returns raw ASCII; add proper parser |
-| Asterisk `modules.conf` may cause startup errors | Medium | `autoload=yes` + explicit loads can conflict on some images; test on first build |
-| `pjsip.conf` passwords baked in via `sed` | Low | Migrate to Asterisk `PJSIP_WIZARD` + `func_odbc` for secrets injection |
+| `pjsip.conf` passwords baked in | Low | Migrate to env-based injection |
 
 ---
 
@@ -186,6 +186,36 @@ Appended to every request:
 | `0` | ISP data reset |
 | `1` | VoIP data reset |
 | `2` | Full factory reset |
+
+### Key P-values (verified against firmware 3.7.5 via JS bundle + live device)
+
+**FXS Port 1 SIP (Port 2 = add 700 to P-number, or use P2312/P2313 for server):**
+
+| P-value | Description | Values |
+|---------|-------------|--------|
+| P47 | SIP server hostname/IP | e.g. `192.168.0.100` |
+| P48 | SIP server port | `5060` |
+| P35 | SIP User ID (From header) | `1001` |
+| P36 | SIP Auth ID (credential username) | `1001` |
+| P34 | SIP Auth Password | **Write-only. API returns success but ignores value. Set via web UI only.** |
+| P130 | SIP Transport | `0`=UDP, `1`=TCP, `2`=TLS (per JS bundle `opts` — confirmed) |
+| P46 | SIP Registration Expiry (s) | `60`–`3600` |
+| P40 | Local SIP listen port | `5060` |
+| P52 | NAT Traversal | `0`=No, `1`=STUN, `2`=Keep-Alive, `3`=UPnP, `4`=Auto, `5`=VPN |
+| P4901 | Hook state | `On Hook` / `Off Hook` |
+| P4921 | SIP Registration state | `Registered` / `Not Registered` |
+
+**FXS Port 2 equivalents:** P735/P736/P734/P830/P746/P740/P4902/P4922 / server: P2312/P2313
+
+**Session token rotation:** every `apply=1` response includes `body.token` = new session token. Must capture and use it for subsequent calls or next request returns "invalid session".
+
+**`api.values.get` quirk:** only the LAST `request=` field is processed when multiple are sent. Call once per key and merge results.
+
+**`noInit:1` password fields** (P34, P734, P8536, etc.): web UI never pre-populates them; submitting empty skips the field. API writes return success but value is not stored — firmware enforces write-only password handling at the CGI level.
+
+**P5001/P5002/P5003:** UCM (Grandstream UCM6xxx) auto-provisioning settings. `P5001=1` enables UCM discovery; does NOT affect SIP server used for registration (P47/P2312 still apply). Safe to leave as-is.
+
+**P6767:** Firmware upgrade protocol — `0`=TFTP, `1`=HTTP, `2`=HTTPS (default), `3`=FTP, `4`=FTPS. Not related to SIP transport.
 
 ---
 
