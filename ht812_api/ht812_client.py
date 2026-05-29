@@ -92,6 +92,24 @@ class HT812Client:
     async def _ensure_auth(self) -> None:
         if not self._session_token:
             await self._login()
+        else:
+            await self._validate_session()
+
+    async def _validate_session(self) -> None:
+        """Check sessioninfo; re-login if the device says the session has expired."""
+        try:
+            r = await self._http.post(
+                "/cgi-bin/api-get_sessioninfo",
+                content=f"session_token={self._session_token}",
+            )
+            data = r.json()
+            results = data.get("results", [])
+            if results and results[0].get("session_id_expired") == "true":
+                self._session_token = ""
+                await self._login()
+        except Exception:
+            # If we can't reach the device, let the actual call surface the error
+            pass
 
     # ------------------------------------------------------------------ helpers
 
