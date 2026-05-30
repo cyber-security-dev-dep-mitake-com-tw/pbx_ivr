@@ -53,10 +53,10 @@ section "ARP State"
 for target in "$HT812_LAN_IP" "$HT812_WAN_IP"; do
   if entry="$(arp_entry_for "$target")"; then
     info "$entry"
-    if printf '%s' "$entry" | grep -q '(incomplete)'; then
-      fail "$target has incomplete ARP entry"
+    if arp_remote_resolved_for "$target" "$USB_IFACE"; then
+      pass "$target has a resolved remote ARP entry"
     else
-      pass "$target has a resolved ARP entry"
+      fail "$target has no resolved remote ARP entry on $USB_IFACE"
     fi
   else
     warn "No ARP entry for $target yet"

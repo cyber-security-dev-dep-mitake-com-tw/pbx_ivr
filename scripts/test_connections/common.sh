@@ -70,6 +70,23 @@ arp_entry_for() {
   '
 }
 
+iface_mac_for() {
+  ifconfig "$1" 2>/dev/null | awk '/ether / {print tolower($2); exit}'
+}
+
+arp_remote_resolved_for() {
+  local ip="$1"
+  local iface="$2"
+  local local_mac
+  local_mac="$(iface_mac_for "$iface")"
+  arp_entry_for "$ip" | awk -v local_mac="$local_mac" '
+    /\(incomplete\)/ {next}
+    local_mac != "" && tolower($4) == local_mac {next}
+    {found=1}
+    END {exit found ? 0 : 1}
+  '
+}
+
 require_sudo() {
   local command_hint="$1"
   if sudo -n true 2>/dev/null; then
@@ -88,10 +105,6 @@ EOF
   fi
   info "sudo permission is required; macOS may prompt for your password now."
   sudo -v
-}
-
-arp_resolved_for() {
-  arp_entry_for "$1" | grep -qv '(incomplete)'
 }
 
 curl_probe() {
