@@ -19,6 +19,7 @@ cat <<EOF
 Interface: $USB_IFACE
 Target:    $TARGET
 Logs:      $LOG_DIR
+Filter:    $(tcpdump_filter_for "$TARGET")
 EOF
 
 require_sudo "./scripts/test_connections/capture_and_probe.sh $TARGET"
@@ -29,7 +30,7 @@ ARP_AFTER="$LOG_DIR/arp_after_${TARGET}.txt"
 
 arp -an >"$ARP_BEFORE" 2>&1 || true
 
-sudo tcpdump -l -ni "$USB_IFACE" -c "$COUNT" "arp or host $TARGET" >"$TCPDUMP_LOG" 2>&1 &
+sudo tcpdump -U -l -e -vv -ni "$USB_IFACE" -c "$COUNT" "$(tcpdump_filter_for "$TARGET")" >"$TCPDUMP_LOG" 2>&1 &
 TCPDUMP_PID=$!
 sleep 1
 

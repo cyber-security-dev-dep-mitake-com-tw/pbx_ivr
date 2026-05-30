@@ -94,6 +94,26 @@ iface_mac_for() {
   ifconfig "$1" 2>/dev/null | awk '/ether / {print tolower($2); exit}'
 }
 
+iface_ipv4_for() {
+  ifconfig "$1" 2>/dev/null | awk '/inet / {print $2; exit}'
+}
+
+iface_netmask_hex_for() {
+  ifconfig "$1" 2>/dev/null | awk '/inet / {print $4; exit}'
+}
+
+expected_profile_for_current_ip() {
+  local ip
+  ip="$(iface_ipv4_for "$USB_IFACE")"
+  if [ "$ip" = "$HT812_LAN_LOCAL_IP" ]; then
+    printf 'lan'
+  elif [ "$ip" = "$HT812_WAN_LOCAL_IP" ]; then
+    printf 'wan'
+  else
+    printf 'unknown'
+  fi
+}
+
 normalize_mac() {
   awk -F: '{
     out = ""
@@ -190,6 +210,11 @@ curl_probe_verbose() {
   else
     curl -vk --max-time 6 "$url" >"$outfile" 2>&1
   fi
+}
+
+tcpdump_filter_for() {
+  local target="$1"
+  printf 'arp or host %s or ether host %s' "$target" "$(iface_mac_for "$USB_IFACE")"
 }
 
 print_summary() {

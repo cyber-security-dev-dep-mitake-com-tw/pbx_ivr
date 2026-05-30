@@ -12,15 +12,26 @@ save_cmd netstat_inet.txt netstat -rn -f inet
 save_cmd arp_before.txt arp -an
 
 section "Expected Addresses"
+CURRENT_PROFILE="$(expected_profile_for_current_ip)"
 cat <<EOF
 USB_IFACE=$USB_IFACE
 USB_SERVICE=$USB_SERVICE
+Current USB IPv4:       $(iface_ipv4_for "$USB_IFACE" || true)
+Current profile:        $CURRENT_PROFILE
 HT812 LAN/admin target: $HT812_LAN_IP from local $HT812_LAN_LOCAL_IP/$HT812_LAN_MASK
 HT812 WAN target:       $HT812_WAN_IP from local $HT812_WAN_LOCAL_IP/$HT812_WAN_MASK
 Asterisk SIP host:      $ASTERISK_HOST:5060
 HT812 API URL:          $HT812_API_URL
 Web URL:                $WEB_URL
 EOF
+
+if [ "$CURRENT_PROFILE" = "wan" ]; then
+  info "Current USB profile is WAN/SIP. LAN/admin checks for $HT812_LAN_IP are expected to fail unless you switch to the lan profile."
+elif [ "$CURRENT_PROFILE" = "lan" ]; then
+  info "Current USB profile is LAN/admin. WAN checks for $HT812_WAN_IP are expected to fail unless you switch to the wan profile."
+else
+  warn "USB IPv4 does not match known lan/wan profile; patch with patch_usb_profile.sh lan|wan."
+fi
 
 section "USB Ethernet Interface"
 if ifconfig "$USB_IFACE" >/tmp/ht812_ifconfig.txt 2>&1; then
@@ -70,7 +81,16 @@ for target in "$HT812_LAN_IP" "$HT812_WAN_IP"; do
 done
 
 section "HT812 HTTP/HTTPS Probes"
-for url in "http://$HT812_LAN_IP/" "https://$HT812_LAN_IP/" "http://$HT812_WAN_IP/" "https://$HT812_WAN_IP/"; do
+URLS=()
+if [ "$CURRENT_PROFILE" = "lan" ]; then
+  URLS=("http://$HT812_LAN_IP/" "https://$HT812_LAN_IP/")
+elif [ "$CURRENT_PROFILE" = "wan" ]; then
+  URLS=("http://$HT812_WAN_IP/" "https://$HT812_WAN_IP/")
+else
+  URLS=("http://$HT812_LAN_IP/" "https://$HT812_LAN_IP/" "http://$HT812_WAN_IP/" "https://$HT812_WAN_IP/")
+fi
+
+for url in "${URLS[@]}"; do
   log_name="$(printf '%s' "$url" | sed 's#[/:]#_#g').log"
   if curl_probe_verbose "$url" "$LOG_DIR/$log_name" "$USB_IFACE"; then
     pass "$url reachable over $USB_IFACE"

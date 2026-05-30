@@ -19,6 +19,7 @@ cat <<EOF
 Interface: $USB_IFACE
 Target:    $TARGET
 Packets:   $COUNT
+Filter:    $(tcpdump_filter_for "$TARGET")
 EOF
 
 require_sudo "./scripts/test_connections/capture_usb_arp.sh $TARGET"
@@ -33,4 +34,4 @@ This capture should show:
 In another Terminal or browser, probe the same target while this runs.
 EOF
 
-sudo tcpdump -ni "$USB_IFACE" -c "$COUNT" "arp or host $TARGET"
+sudo tcpdump -U -l -e -vv -ni "$USB_IFACE" -c "$COUNT" "$(tcpdump_filter_for "$TARGET")"
