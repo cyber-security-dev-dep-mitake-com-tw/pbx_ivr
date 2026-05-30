@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Cable, CheckCircle2, ClipboardList, PhoneCall, Radio, RefreshCw, Server, TriangleAlert } from "lucide-react";
+import {
+  Activity, ArrowRight, Cable, CheckCircle2, ClipboardList,
+  Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
+  Server, Settings2, TriangleAlert, Zap,
+} from "lucide-react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -41,7 +45,22 @@ type CommunicationEvent = {
   data: Record<string, unknown>;
 };
 
-type Tab = "setup" | "timeline";
+type Tab = "setup" | "protocol" | "timeline";
+type LineFilter = "all" | "1" | "2";
+
+const DTMF_KEYS = [
+  ["1", "2", "3"],
+  ["4", "5", "6"],
+  ["7", "8", "9"],
+  ["*", "0", "#"],
+] as const;
+
+function normalizeLineNum(line: string | null | undefined): "1" | "2" | null {
+  if (!line) return null;
+  if (line === "1" || line === "1001") return "1";
+  if (line === "2" || line === "1002") return "2";
+  return null;
+}
 
 function App() {
   const [tab, setTab] = useState<Tab>("setup");
@@ -51,6 +70,7 @@ function App() {
   const [provisioning, setProvisioning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
+  const [lineFilter, setLineFilter] = useState<LineFilter>("all");
 
   const allRegistered = Boolean(summary?.ports.port1.registered && summary?.ports.port2.registered);
 
@@ -86,9 +106,7 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    loadSummary();
-  }, []);
+  useEffect(() => { loadSummary(); }, []);
 
   useEffect(() => {
     const source = new EventSource(`${API_BASE_URL}/events/stream`);
@@ -105,6 +123,42 @@ function App() {
   }, []);
 
   const latestEvents = useMemo(() => [...events].reverse(), [events]);
+
+  // Per-line protocol state derived from the live event stream
+  const lineProtocol = useMemo(() => {
+    const state: Record<"1" | "2", {
+      hookLabel: string;
+      hookState: string;
+      dtmfSeq: string[];
+      registered: boolean;
+    }> = {
+      "1": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
+      "2": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
+    };
+
+    for (const ev of events) {
+      const ln = normalizeLineNum(ev.line);
+      if (!ln) continue;
+      if (ev.type === "fxs_hook") {
+        state[ln].hookLabel = (ev.data.hook_label as string) || "unknown";
+        state[ln].hookState = (ev.data.hook_state as string) || "";
+      }
+      if (ev.type === "dtmf" && ev.digit) {
+        state[ln].dtmfSeq = [...state[ln].dtmfSeq, ev.digit].slice(-30);
+      }
+    }
+
+    if (summary) {
+      state["1"].registered = summary.ports.port1.registered;
+      state["2"].registered = summary.ports.port2.registered;
+    }
+    return state;
+  }, [events, summary]);
+
+  const filteredEvents = useMemo(() => {
+    if (lineFilter === "all") return latestEvents;
+    return latestEvents.filter((ev) => normalizeLineNum(ev.line) === lineFilter);
+  }, [latestEvents, lineFilter]);
 
   return (
     <main className="shell">
@@ -124,6 +178,10 @@ function App() {
           <ClipboardList size={18} />
           Setup
         </button>
+        <button className={tab === "protocol" ? "active" : ""} onClick={() => setTab("protocol")}>
+          <Hash size={18} />
+          Protocol
+        </button>
         <button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>
           <Activity size={18} />
           Timeline
@@ -132,7 +190,7 @@ function App() {
 
       {error && <div className="error"><TriangleAlert size={18} />{error}</div>}
 
-      {tab === "setup" ? (
+      {tab === "setup" && (
         <section className="layout">
           <div className="panel">
             <div className="panel-head">
@@ -167,23 +225,44 @@ function App() {
             </p>
           </div>
         </section>
-      ) : (
+      )}
+
+      {tab === "protocol" && (
+        <section className="protocol-layout">
+          <LineDTMFPanel lineNum="1" protocol={lineProtocol["1"]} portStatus={summary?.ports.port1} />
+          <LineDTMFPanel lineNum="2" protocol={lineProtocol["2"]} portStatus={summary?.ports.port2} />
+        </section>
+      )}
+
+      {tab === "timeline" && (
         <section className="panel">
           <div className="panel-head">
             <div>
               <h2>Live Communication Process</h2>
-              <p>ARI and provisioning events stream from the backend.</p>
+              <p>DTMF digits, FXS hook changes, SIP routing, and provisioning events.</p>
             </div>
             <div className={`stream ${streamState}`}>
               <Radio size={17} />
               {streamState}
             </div>
           </div>
+          <div className="filter-bar">
+            <span>Line:</span>
+            {(["all", "1", "2"] as LineFilter[]).map((f) => (
+              <button
+                key={f}
+                className={`filter-btn ${lineFilter === f ? "active" : ""}`}
+                onClick={() => setLineFilter(f)}
+              >
+                {f === "all" ? "All" : `Line ${f}`}
+              </button>
+            ))}
+          </div>
           <div className="timeline">
-            {latestEvents.length === 0 ? (
+            {filteredEvents.length === 0 ? (
               <div className="empty">No communication events yet.</div>
             ) : (
-              latestEvents.map((event) => <EventRow key={event.id} event={event} />)
+              filteredEvents.map((event) => <EventRow key={event.id} event={event} />)
             )}
           </div>
         </section>
@@ -214,6 +293,147 @@ function LinePanel({ port, label, expected }: { port?: PortStatus; label: string
   );
 }
 
+type LineProtocol = {
+  hookLabel: string;
+  hookState: string;
+  dtmfSeq: string[];
+  registered: boolean;
+};
+
+function LineDTMFPanel({
+  lineNum,
+  protocol,
+  portStatus,
+}: {
+  lineNum: "1" | "2";
+  protocol: LineProtocol;
+  portStatus?: PortStatus;
+}) {
+  const recentDigits = new Set(protocol.dtmfSeq.slice(-5));
+  const isOffHook = protocol.hookState === "1" || protocol.hookLabel === "off-hook";
+  const hookKnown = protocol.hookLabel !== "unknown";
+
+  return (
+    <div className="panel dtmf-panel">
+      <div className="panel-head">
+        <div>
+          <h2>FXS Line {lineNum}</h2>
+          <p>Extension 100{lineNum} · {portStatus?.sip_server || "—"} · TCP</p>
+        </div>
+        <div className="badge-group">
+          <div className={`status-pill ${protocol.registered ? "ok" : "warn"}`}>
+            {protocol.registered ? <CheckCircle2 size={16} /> : <TriangleAlert size={16} />}
+            {protocol.registered ? "Registered" : "Unregistered"}
+          </div>
+          {hookKnown && (
+            <div className={`status-pill ${isOffHook ? "ok" : ""}`}>
+              <Phone size={16} />
+              {isOffHook ? "Off-hook" : "On-hook"}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="protocol-body">
+        <div className="keypad-section">
+          <p className="section-label">DTMF Keypad</p>
+          <p className="key-legend">Last 5 keys highlighted</p>
+          <div className="keypad">
+            {DTMF_KEYS.map((row, ri) => (
+              <div key={ri} className="keypad-row">
+                {row.map((key) => (
+                  <div key={key} className={`keypad-key ${recentDigits.has(key) ? "pressed" : ""}`}>
+                    {key}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="seq-section">
+          <div className="seq-block">
+            <p className="section-label">DTMF Sequence</p>
+            <div className="dtmf-seq">
+              {protocol.dtmfSeq.length > 0
+                ? protocol.dtmfSeq.map((d, i) => (
+                    <span
+                      key={i}
+                      className={`dtmf-digit ${i >= protocol.dtmfSeq.length - 5 ? "recent" : ""}`}
+                    >
+                      {d}
+                    </span>
+                  ))
+                : <span className="placeholder">No digits received yet</span>
+              }
+            </div>
+          </div>
+
+          <div className="fxs-block">
+            <p className="section-label">FXS Hook State</p>
+            <div className="fxs-state-row">
+              <div className={`fxs-indicator ${isOffHook ? "active" : hookKnown ? "idle" : "unknown"}`} />
+              <span className="fxs-label">
+                {!hookKnown
+                  ? "Awaiting first hook event…"
+                  : isOffHook
+                  ? "Off-hook — line active"
+                  : "On-hook — line idle"}
+              </span>
+            </div>
+            <div className="fxs-codes">
+              <div className="fxs-code-row">
+                <span className="code-badge">P490{lineNum}</span>
+                <span>Hook: <strong>{portStatus?.hook ?? protocol.hookState || "—"}</strong></span>
+                <span className="code-note">0=on-hook · 1=off-hook</span>
+              </div>
+              <div className="fxs-code-row">
+                <span className="code-badge">P130</span>
+                <span>Transport: <strong>1 (TCP)</strong></span>
+              </div>
+              <div className="fxs-code-row">
+                <span className="code-badge">P492{lineNum}</span>
+                <span>Registered: <strong>{protocol.registered ? "1 (yes)" : "0 (no)"}</strong></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function eventIcon(type: string) {
+  switch (type) {
+    case "dtmf":             return <Hash size={17} />;
+    case "fxs_hook":         return <Phone size={17} />;
+    case "route":            return <ArrowRight size={17} />;
+    case "call_start":
+    case "stasis_start":     return <PhoneCall size={17} />;
+    case "hangup":
+    case "channel_destroyed":return <PhoneOff size={17} />;
+    case "provision":        return <Settings2 size={17} />;
+    case "bridge":           return <Zap size={17} />;
+    case "error":            return <TriangleAlert size={17} />;
+    default:                 return <Server size={17} />;
+  }
+}
+
+function eventIconClass(type: string): string {
+  switch (type) {
+    case "dtmf":              return "icon-dtmf";
+    case "fxs_hook":          return "icon-fxs";
+    case "call_start":
+    case "stasis_start":      return "icon-call";
+    case "hangup":
+    case "channel_destroyed": return "icon-hangup";
+    case "provision":         return "icon-provision";
+    case "bridge":            return "icon-bridge";
+    case "route":             return "icon-route";
+    default:                  return "";
+  }
+}
+
 function EventRow({ event }: { event: CommunicationEvent }) {
   const time = new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
@@ -221,22 +441,24 @@ function EventRow({ event }: { event: CommunicationEvent }) {
     second: "2-digit",
   }).format(new Date(event.created_at));
 
+  const lineNum = normalizeLineNum(event.line);
+
   return (
-    <article className="event-row">
-      <div className="event-icon"><Server size={17} /></div>
+    <article className={`event-row ${event.type === "fxs_hook" ? "ev-fxs" : ""}`}>
+      <div className={`event-icon ${eventIconClass(event.type)}`}>{eventIcon(event.type)}</div>
       <div className="event-main">
         <div className="event-meta">
           <span>{time}</span>
           <span>{event.source}</span>
-          <span>{event.type}</span>
-          {event.digit && <span>DTMF {event.digit}</span>}
+          <span className={`type-badge type-${event.type.replace(/_/g, "-")}`}>{event.type}</span>
+          {event.digit && <span className="dtmf-badge">DTMF <strong>{event.digit}</strong></span>}
+          {lineNum && <span>Line {lineNum}</span>}
         </div>
         <p>{event.message}</p>
         {(event.caller || event.channel_id) && (
           <div className="event-detail">
             {event.caller && <span>caller {event.caller}</span>}
-            {event.line && <span>line {event.line}</span>}
-            {event.channel_id && <span>channel {event.channel_id}</span>}
+            {event.channel_id && <span>ch {event.channel_id.slice(0, 20)}…</span>}
           </div>
         )}
       </div>

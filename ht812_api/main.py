@@ -13,6 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from events import EventStore
 from events_router import router as events_router
+from fxs_poller import FXSPoller
 from ht812_client import HT812Client
 from metrics import BACKUP_FILE_COUNT
 from router import router
@@ -55,6 +56,9 @@ async def lifespan(app: FastAPI):
     app.state.events = EventStore()
     app.state.event_queue = asyncio.Queue()
 
+    app.state.fxs_poller = FXSPoller(app)
+    app.state.fxs_poller.start()
+
     # Initialize backup file count gauge
     backup_dir = Path(os.environ.get("BACKUP_DIR", "/backups"))
     BACKUP_FILE_COUNT.set(len(list(backup_dir.glob("ht812_config_*.xml"))))
@@ -72,6 +76,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    app.state.fxs_poller.stop()
     scheduler.shutdown(wait=False)
     await app.state.ht812.aclose()
     log.info("shutdown_complete")

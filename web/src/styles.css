@@ -306,6 +306,238 @@ dd {
   }
 }
 
+/* ------------------------------------------------------------------ Protocol tab */
+
+.protocol-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.badge-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.protocol-body {
+  display: grid;
+  grid-template-columns: 186px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+  margin-top: 6px;
+}
+
+.section-label {
+  color: #607384;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px !important;
+}
+
+.key-legend {
+  color: #8a9fb0;
+  font-size: 0.75rem;
+  margin-bottom: 10px !important;
+}
+
+/* Keypad */
+
+.keypad {
+  display: grid;
+  gap: 5px;
+}
+
+.keypad-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+
+.keypad-key {
+  display: grid;
+  place-items: center;
+  height: 50px;
+  border: 2px solid #d8e0e5;
+  border-radius: 8px;
+  background: #f8fafb;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #404f5a;
+  transition: background 0.35s, border-color 0.35s, color 0.35s, box-shadow 0.35s;
+  user-select: none;
+}
+
+.keypad-key.pressed {
+  background: #176b87;
+  border-color: #176b87;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(23, 107, 135, 0.30);
+}
+
+/* Sequence and FXS blocks */
+
+.seq-section {
+  display: grid;
+  gap: 18px;
+}
+
+.seq-block,
+.fxs-block {
+  display: grid;
+  gap: 6px;
+}
+
+.dtmf-seq {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 46px;
+  padding: 8px;
+  background: #f0f8fa;
+  border: 1px solid #cce5ed;
+  border-radius: 6px;
+  align-items: center;
+}
+
+.dtmf-digit {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
+  background: #d4eaf0;
+  color: #176b87;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 0.88rem;
+  font-weight: 800;
+  transition: background 0.3s, color 0.3s;
+}
+
+.dtmf-digit.recent {
+  background: #176b87;
+  color: #fff;
+}
+
+.placeholder {
+  color: #8a9fb0;
+  font-size: 0.85rem;
+}
+
+/* FXS hook state */
+
+.fxs-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #f8fafb;
+  border: 1px solid #d8e0e5;
+  border-radius: 6px;
+}
+
+.fxs-indicator {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.fxs-indicator.active  { background: #16764c; box-shadow: 0 0 5px rgba(22,118,76,.45); }
+.fxs-indicator.idle    { background: #9a5c00; }
+.fxs-indicator.unknown { background: #c8d3da; }
+
+.fxs-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #2c3e4a;
+}
+
+.fxs-codes {
+  display: grid;
+  gap: 5px;
+}
+
+.fxs-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.80rem;
+  color: #607384;
+}
+
+.code-badge {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.code-note {
+  color: #8a9fb0;
+}
+
+/* ------------------------------------------------------------------ Event row enhancements */
+
+.event-row.ev-fxs {
+  background: #f3fbf5;
+  border-color: #b2d9bc;
+}
+
+.icon-dtmf      { background: #e8f0fe; color: #1a73e8; }
+.icon-fxs       { background: #e6f4ea; color: #188038; }
+.icon-call      { background: #e6f4ea; color: #188038; }
+.icon-hangup    { background: #fce8e6; color: #c5221f; }
+.icon-provision { background: #f3e8fd; color: #7b1fa2; }
+.icon-bridge    { background: #fef7e0; color: #b06000; }
+.icon-route     { background: #fef7e0; color: #b06000; }
+
+.dtmf-badge {
+  background: #e8f0fe !important;
+  color: #1a73e8 !important;
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ Filter bar */
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 0.84rem;
+  color: #607384;
+}
+
+.filter-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #c8d3da;
+  border-radius: 15px;
+  background: #fff;
+  color: #1b2733;
+  font-size: 0.80rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filter-btn.active {
+  border-color: #24374a;
+  background: #24374a;
+  color: #fff;
+}
+
+/* ------------------------------------------------------------------ Responsive */
+
 @media (max-width: 840px) {
   .topbar,
   .panel-head {
@@ -314,7 +546,12 @@ dd {
   }
 
   .layout,
-  .line-grid {
+  .line-grid,
+  .protocol-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .protocol-body {
     grid-template-columns: 1fr;
   }
 
