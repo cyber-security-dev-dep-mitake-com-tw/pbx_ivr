@@ -27,8 +27,13 @@ require_sudo "./scripts/test_connections/capture_and_probe.sh $TARGET"
 TCPDUMP_LOG="$LOG_DIR/tcpdump_${TARGET}.log"
 ARP_BEFORE="$LOG_DIR/arp_before_${TARGET}.txt"
 ARP_AFTER="$LOG_DIR/arp_after_${TARGET}.txt"
+ROUTE_BEFORE="$LOG_DIR/route_before_${TARGET}.txt"
+ROUTE_AFTER_CLEAR="$LOG_DIR/route_after_clear_${TARGET}.txt"
 
 arp -an >"$ARP_BEFORE" 2>&1 || true
+route -n get "$TARGET" >"$ROUTE_BEFORE" 2>&1 || true
+clear_target_cache "$TARGET"
+route -n get "$TARGET" >"$ROUTE_AFTER_CLEAR" 2>&1 || true
 
 sudo tcpdump -U -l -e -vv -ni "$USB_IFACE" -c "$COUNT" "$(tcpdump_filter_for "$TARGET")" >"$TCPDUMP_LOG" 2>&1 &
 TCPDUMP_PID=$!
@@ -52,6 +57,12 @@ arp -an >"$ARP_AFTER" 2>&1 || true
 
 section "Tcpdump"
 cat "$TCPDUMP_LOG"
+
+section "Route State"
+printf '\n-- before clear --\n'
+cat "$ROUTE_BEFORE"
+printf '\n-- after clear --\n'
+cat "$ROUTE_AFTER_CLEAR"
 
 section "Probe Logs"
 for f in "$LOG_DIR"/*"$TARGET"*.log; do

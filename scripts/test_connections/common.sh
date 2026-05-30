@@ -9,6 +9,7 @@ USB_SERVICE="${USB_SERVICE:-USB 10/100 LAN}"
 
 HT812_LAN_IP="${HT812_LAN_IP:-192.168.2.1}"
 HT812_LAN_LOCAL_IP="${HT812_LAN_LOCAL_IP:-192.168.2.10}"
+HT812_LAN_RESET_LOCAL_IP="${HT812_LAN_RESET_LOCAL_IP:-192.168.2.2}"
 HT812_LAN_MASK="${HT812_LAN_MASK:-255.255.255.0}"
 
 HT812_WAN_IP="${HT812_WAN_IP:-192.168.0.160}"
@@ -100,6 +101,43 @@ iface_ipv4_for() {
 
 iface_netmask_hex_for() {
   ifconfig "$1" 2>/dev/null | awk '/inet / {print $4; exit}'
+}
+
+wait_for_iface_ipv4() {
+  local iface="$1"
+  local expected_ip="$2"
+  local attempts="${3:-10}"
+  local current_ip
+  local i
+  for i in $(seq 1 "$attempts"); do
+    current_ip="$(iface_ipv4_for "$iface")"
+    if [ "$current_ip" = "$expected_ip" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_iface_ipv4_prefix() {
+  local iface="$1"
+  local prefix="$2"
+  local attempts="${3:-20}"
+  local current_ip
+  local i
+  for i in $(seq 1 "$attempts"); do
+    current_ip="$(iface_ipv4_for "$iface")"
+    case "$current_ip" in
+      "$prefix"*) return 0 ;;
+    esac
+    sleep 1
+  done
+  return 1
+}
+
+clear_iface_ipv4() {
+  local iface="$1"
+  sudo ifconfig "$iface" inet 0.0.0.0 >/dev/null 2>&1 || true
 }
 
 expected_profile_for_current_ip() {
@@ -215,6 +253,14 @@ curl_probe_verbose() {
 tcpdump_filter_for() {
   local target="$1"
   printf 'arp or host %s or ether host %s' "$target" "$(iface_mac_for "$USB_IFACE")"
+}
+
+clear_target_cache() {
+  local target="$1"
+  info "clearing stale route/ARP cache for $target"
+  sudo route -n delete -host "$target" >/dev/null 2>&1 || true
+  sudo route -n delete "$target" >/dev/null 2>&1 || true
+  sudo arp -d "$target" >/dev/null 2>&1 || true
 }
 
 print_summary() {

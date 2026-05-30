@@ -16,6 +16,9 @@ Target:    $TARGET
 Interface: $USB_IFACE
 EOF
 
+warn "On macOS, a host route added with -interface may create a permanent self-MAC ARP entry."
+warn "Use this only to inspect route selection; for real WAN testing, prefer turning Wi-Fi off or using a non-overlapping subnet."
+
 if [ "${APPLY:-0}" != "1" ]; then
   warn "Dry run only. Re-run with APPLY=1 to add the host route."
   exit 0

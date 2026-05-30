@@ -61,12 +61,22 @@ for target in "$HT812_LAN_IP" "$HT812_WAN_IP"; do
     fi
     if printf '%s' "$flags" | grep -q 'REJECT'; then
       warn "$target has a REJECT route; ARP likely failed recently"
+      warn "Run: APPLY=1 ./scripts/test_connections/clear_target_cache.sh $target"
     fi
   fi
 done
 
 section "ARP State"
-for target in "$HT812_LAN_IP" "$HT812_WAN_IP"; do
+ARP_TARGETS=()
+if [ "$CURRENT_PROFILE" = "lan" ]; then
+  ARP_TARGETS=("$HT812_LAN_IP")
+elif [ "$CURRENT_PROFILE" = "wan" ]; then
+  ARP_TARGETS=("$HT812_WAN_IP")
+else
+  ARP_TARGETS=("$HT812_LAN_IP" "$HT812_WAN_IP")
+fi
+
+for target in "${ARP_TARGETS[@]}"; do
   if entry="$(arp_entry_for "$target")"; then
     info "$entry"
     if arp_remote_resolved_for "$target" "$USB_IFACE"; then
@@ -79,6 +89,12 @@ for target in "$HT812_LAN_IP" "$HT812_WAN_IP"; do
     warn "No ARP entry for $target yet"
   fi
 done
+
+if [ "$CURRENT_PROFILE" = "wan" ]; then
+  warn "Skipped LAN ARP verdict for $HT812_LAN_IP because current profile is wan"
+elif [ "$CURRENT_PROFILE" = "lan" ]; then
+  warn "Skipped WAN ARP verdict for $HT812_WAN_IP because current profile is lan"
+fi
 
 section "HT812 HTTP/HTTPS Probes"
 URLS=()

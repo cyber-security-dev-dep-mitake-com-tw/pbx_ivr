@@ -41,7 +41,20 @@ fi
 require_sudo "APPLY=1 ./scripts/test_connections/patch_usb_profile.sh $PROFILE"
 
 run_show sudo networksetup -setmanual "$USB_SERVICE" "$IP" "$MASK" "0.0.0.0"
+
+if ! wait_for_iface_ipv4 "$USB_IFACE" "$IP" 12; then
+  warn "$USB_IFACE did not report $IP after networksetup; applying direct ifconfig fallback"
+  run_show sudo ifconfig "$USB_IFACE" inet "$IP" netmask "$MASK" up
+  wait_for_iface_ipv4 "$USB_IFACE" "$IP" 5 || true
+fi
+
 run_show ifconfig "$USB_IFACE"
+if [ "$(iface_ipv4_for "$USB_IFACE")" != "$IP" ]; then
+  fail "$USB_IFACE IPv4 is $(iface_ipv4_for "$USB_IFACE"), expected $IP"
+  print_summary
+fi
+
+clear_target_cache "$TARGET"
 run_show route -n get "$TARGET"
 
 section "Immediate Probe"

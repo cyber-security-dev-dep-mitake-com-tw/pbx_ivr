@@ -66,9 +66,35 @@ Apply WAN/SIP profile:
 APPLY=1 ./scripts/test_connections/patch_usb_profile.sh wan
 ```
 
+## Factory Reset LAN Test
+
+After resetting the HT812, connect:
+
+```text
+Mac USB Ethernet -> HT812 LAN/NET2
+HT812 WAN/NET1 unplugged
+```
+
+Then run:
+
+```bash
+APPLY=1 ./scripts/test_connections/lan_reset_test.sh
+```
+
+This tries DHCP first, then falls back to manual `192.168.2.2/24`, then probes
+`http://192.168.2.1` and stores logs under `scripts/test_connections/logs/`.
+
+To set DHCP only:
+
+```bash
+APPLY=1 ./scripts/test_connections/patch_usb_dhcp.sh
+```
+
 ## Force Host Route
 
-Useful when Wi-Fi or another interface steals `192.168.0.160`.
+Useful only for inspecting route selection when Wi-Fi or another interface steals
+`192.168.0.160`. On macOS, this can create a permanent self-MAC ARP entry, so
+for real reachability tests prefer turning Wi-Fi off.
 
 Dry run:
 
@@ -80,6 +106,28 @@ Apply:
 
 ```bash
 APPLY=1 ./scripts/test_connections/patch_host_route.sh 192.168.0.160
+```
+
+Clear it:
+
+```bash
+APPLY=1 ./scripts/test_connections/clear_host_route.sh 192.168.0.160
+```
+
+## Temporarily Disable Wi-Fi
+
+For clean direct WAN-port testing:
+
+```bash
+APPLY=1 ./scripts/test_connections/patch_wifi.sh off
+APPLY=1 ./scripts/test_connections/patch_usb_profile.sh wan
+./scripts/test_connections/verify_all.sh
+```
+
+Turn Wi-Fi back on:
+
+```bash
+APPLY=1 ./scripts/test_connections/patch_wifi.sh on
 ```
 
 ## Capture and Probe Automatically
@@ -98,6 +146,14 @@ or:
 
 The script starts `tcpdump`, runs HTTP/HTTPS and ping probes, then saves the
 packet trace and probe logs under `scripts/test_connections/logs/<timestamp>/`.
+It also clears stale macOS route/ARP cache entries before probing, so `Host is
+down` cache state does not prevent packets from leaving the interface.
+
+To clear a stale target manually:
+
+```bash
+APPLY=1 ./scripts/test_connections/clear_target_cache.sh 192.168.0.160
+```
 
 ## Override Defaults
 
