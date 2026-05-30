@@ -5,6 +5,7 @@ from events import CommunicationEventIn
 log = structlog.get_logger()
 
 _POLL_INTERVAL = 2.0
+_MAX_BACKOFF   = 120.0   # cap retry wait at 2 minutes on repeated auth failure
 _HOOK_LABELS = {"0": "on-hook", "1": "off-hook"}
 
 
@@ -42,13 +43,19 @@ class FXSPoller:
 
     async def _run(self) -> None:
         await asyncio.sleep(4.0)  # wait for HT812Client auth to settle
+        backoff = _POLL_INTERVAL
         while True:
             try:
                 await self._poll()
+                backoff = _POLL_INTERVAL  # reset on success
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                log.warning("fxs_poll_error", error=str(e))
+                # Exponential back-off so auth failures don't hammer the lockout counter
+                log.warning("fxs_poll_error", error=str(e), retry_in=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF)
+                continue
             await asyncio.sleep(_POLL_INTERVAL)
 
     async def _poll(self) -> None:
