@@ -145,6 +145,11 @@ h3 {
   align-items: start;
 }
 
+.side-stack {
+  display: grid;
+  gap: 18px;
+}
+
 .panel,
 .line-panel {
   background: #fff;
@@ -162,6 +167,10 @@ h3 {
   justify-content: space-between;
   gap: 14px;
   margin-bottom: 18px;
+}
+
+.compact-head {
+  margin-bottom: 10px;
 }
 
 .panel-head p,
@@ -227,6 +236,56 @@ dd {
 
 .note {
   line-height: 1.45;
+}
+
+.snapshot-message {
+  margin-top: 10px;
+  color: #16764c;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.snapshot-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.snapshot-row,
+.snapshot-empty {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 10px;
+  border: 1px solid #d9e2e7;
+  border-radius: 8px;
+  background: #f8fafb;
+}
+
+.snapshot-row svg,
+.snapshot-empty svg {
+  color: #176b87;
+}
+
+.snapshot-row strong,
+.snapshot-row span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snapshot-row strong {
+  color: #1b2733;
+  font-size: 0.82rem;
+}
+
+.snapshot-row span,
+.snapshot-empty {
+  color: #607384;
+  font-size: 0.78rem;
 }
 
 .error {
@@ -546,6 +605,7 @@ dd {
   }
 
   .layout,
+  .side-stack,
   .line-grid,
   .protocol-layout {
     grid-template-columns: 1fr;

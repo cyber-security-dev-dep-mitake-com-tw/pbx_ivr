@@ -30,7 +30,8 @@ from models import (
 log = structlog.get_logger()
 router = APIRouter(prefix="/ht812", tags=["HT812V2"])
 
-_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
+_DEFAULT_BACKUP_DIR = Path(__file__).resolve().parent.parent / "backups"
+_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_DEFAULT_BACKUP_DIR)))
 _DEFAULT_SIP_SERVER = os.environ.get("ASTERISK_SIP_HOST", "host.docker.internal")
 
 _TRANSPORT_VALUES = {
@@ -91,6 +92,30 @@ async def list_backups():
             path=str(f),
         ))
     return BackupListResponse(count=len(items), backups=items)
+
+
+@router.post(
+    "/snapshot-backup",
+    response_model=BackupFile,
+    summary="Create and save a timestamped config snapshot",
+)
+async def snapshot_backup(request: Request):
+    REQUEST_COUNT.labels(endpoint="snapshot_backup").inc()
+    with REQUEST_LATENCY.labels(endpoint="snapshot_backup").time():
+        try:
+            _xml, path = await _client(request).save_config_snapshot()
+        except HT812Error as e:
+            raise _handle(e)
+
+    stat = path.stat()
+    _update_backup_gauge()
+    log.info("snapshot_backup_saved", filename=path.name, path=str(path), size_bytes=stat.st_size)
+    return BackupFile(
+        filename=path.name,
+        size_bytes=stat.st_size,
+        created_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+        path=str(path),
+    )
 
 
 @router.get(
@@ -315,7 +340,3 @@ def _update_backup_gauge() -> None:
         BACKUP_FILE_COUNT.set(count)
     except Exception:
         pass
-
-# backuo
-@router.post(
-    "/ht812/snapshot-backup",    

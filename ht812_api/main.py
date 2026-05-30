@@ -60,7 +60,8 @@ async def lifespan(app: FastAPI):
     app.state.fxs_poller.start()
 
     # Initialize backup file count gauge
-    backup_dir = Path(os.environ.get("BACKUP_DIR", "/backups"))
+    default_backup_dir = Path(__file__).resolve().parent.parent / "backups"
+    backup_dir = Path(os.environ.get("BACKUP_DIR", str(default_backup_dir)))
     BACKUP_FILE_COUNT.set(len(list(backup_dir.glob("ht812_config_*.xml"))))
 
     scheduler.add_job(

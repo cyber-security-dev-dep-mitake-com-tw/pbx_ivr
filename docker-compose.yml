@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      - BACKUP_DIR=/backups
       - BACKUP_KEEP=30
     ports:
       - "8000:8000"

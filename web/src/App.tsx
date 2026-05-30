@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity, ArrowRight, Cable, CheckCircle2, ClipboardList,
-  Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
+  Activity, Archive, ArrowRight, Cable, CheckCircle2, ClipboardList,
+  DatabaseBackup, Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
   Server, Settings2, TriangleAlert, Zap,
 } from "lucide-react";
 import { createRoot } from "react-dom/client";
@@ -45,6 +45,18 @@ type CommunicationEvent = {
   data: Record<string, unknown>;
 };
 
+type BackupFile = {
+  filename: string;
+  size_bytes: number;
+  created_at: string;
+  path: string;
+};
+
+type BackupListResponse = {
+  count: number;
+  backups: BackupFile[];
+};
+
 type Tab = "setup" | "protocol" | "timeline";
 type LineFilter = "all" | "1" | "2";
 
@@ -66,9 +78,13 @@ function App() {
   const [tab, setTab] = useState<Tab>("setup");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [events, setEvents] = useState<CommunicationEvent[]>([]);
+  const [backups, setBackups] = useState<BackupFile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [backupLoading, setBackupLoading] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
+  const [snapshotSaving, setSnapshotSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
   const [lineFilter, setLineFilter] = useState<LineFilter>("all");
 
@@ -85,6 +101,37 @@ function App() {
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadBackups() {
+    setBackupLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/ht812/backups`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as BackupListResponse;
+      setBackups(data.backups);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load snapshots");
+    } finally {
+      setBackupLoading(false);
+    }
+  }
+
+  async function createSnapshotBackup() {
+    setSnapshotSaving(true);
+    setBackupMessage(null);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/ht812/snapshot-backup`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      const saved = await res.json() as BackupFile;
+      setBackupMessage(`Saved ${saved.filename}`);
+      await loadBackups();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save snapshot");
+    } finally {
+      setSnapshotSaving(false);
     }
   }
 
@@ -106,7 +153,10 @@ function App() {
     }
   }
 
-  useEffect(() => { loadSummary(); }, []);
+  useEffect(() => {
+    loadSummary();
+    loadBackups();
+  }, []);
 
   useEffect(() => {
     const source = new EventSource(`${API_BASE_URL}/events/stream`);
@@ -208,21 +258,50 @@ function App() {
             </div>
           </div>
 
-          <div className="panel side">
-            <h2>Provisioning</h2>
-            <dl className="kv">
-              <div><dt>SIP transport</dt><dd>TCP</dd></div>
-              <div><dt>SIP port</dt><dd>5060</dd></div>
-              <div><dt>Password fields</dt><dd>P34, P734</dd></div>
-              <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
-            </dl>
-            <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
-              <Cable size={18} />
-              {provisioning ? "Applying..." : "Apply two-line settings"}
-            </button>
-            <p className="note">
-              SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
-            </p>
+          <div className="side-stack">
+            <div className="panel side">
+              <h2>Provisioning</h2>
+              <dl className="kv">
+                <div><dt>SIP transport</dt><dd>TCP</dd></div>
+                <div><dt>SIP port</dt><dd>5060</dd></div>
+                <div><dt>Password fields</dt><dd>P34, P734</dd></div>
+                <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
+              </dl>
+              <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
+                <Cable size={18} />
+                {provisioning ? "Applying..." : "Apply two-line settings"}
+              </button>
+              <p className="note">
+                SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
+              </p>
+            </div>
+
+            <div className="panel side">
+              <div className="panel-head compact-head">
+                <div>
+                  <h2>Snapshots</h2>
+                  <p>{backups.length} saved XML backups</p>
+                </div>
+                <button className="icon-button" onClick={loadBackups} disabled={backupLoading} title="Refresh snapshots">
+                  <RefreshCw size={18} className={backupLoading ? "spin" : ""} />
+                </button>
+              </div>
+              <button className="primary" onClick={createSnapshotBackup} disabled={snapshotSaving}>
+                <DatabaseBackup size={18} />
+                {snapshotSaving ? "Saving..." : "Save snapshot"}
+              </button>
+              {backupMessage && <p className="snapshot-message">{backupMessage}</p>}
+              <div className="snapshot-list">
+                {backups.length === 0 ? (
+                  <div className="snapshot-empty">
+                    <Archive size={17} />
+                    No snapshots found
+                  </div>
+                ) : (
+                  backups.slice(0, 8).map((backup) => <SnapshotRow key={backup.filename} backup={backup} />)
+                )}
+              </div>
+            </div>
           </div>
         </section>
       )}
@@ -268,6 +347,31 @@ function App() {
         </section>
       )}
     </main>
+  );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function SnapshotRow({ backup }: { backup: BackupFile }) {
+  const created = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(backup.created_at));
+
+  return (
+    <article className="snapshot-row" title={backup.path}>
+      <Archive size={17} />
+      <div>
+        <strong>{backup.filename}</strong>
+        <span>{created} · {formatBytes(backup.size_bytes)}</span>
+      </div>
+    </article>
   );
 }
 

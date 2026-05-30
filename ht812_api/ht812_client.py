@@ -50,7 +50,8 @@ import httpx
 _HT812_HOST = os.environ.get("HT812_HOST", "https://192.168.0.160")
 _ADMIN_USER = os.environ.get("HT812_ADMIN_USER", "admin")
 _ADMIN_PASS = os.environ.get("HT812_ADMIN_PASS", "admin")
-_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
+_DEFAULT_BACKUP_DIR = Path(__file__).resolve().parent.parent / "backups"
+_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_DEFAULT_BACKUP_DIR)))
 
 
 class HT812Error(Exception):
@@ -175,14 +176,20 @@ class HT812Client:
 
     # ------------------------------------------------------------------ public API
 
-    async def get_config_xml(self, keep_last: int = 30) -> str:
-        """Download full device config as XML; saves a timestamped backup and prunes old ones."""
+    async def save_config_snapshot(self, keep_last: int = 30) -> tuple[str, Path]:
+        """Download full device config as XML, save it, and return the XML plus saved path."""
         r = await self._get("/cgi-bin/download_cfg_xml")
         xml = r.text
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        (_BACKUP_DIR / f"ht812_config_{ts}.xml").write_text(xml)
+        path = _BACKUP_DIR / f"ht812_config_{ts}.xml"
+        path.write_text(xml)
         self._prune_backups(keep_last)
+        return xml, path
+
+    async def get_config_xml(self, keep_last: int = 30) -> str:
+        """Download full device config as XML; saves a timestamped backup and prunes old ones."""
+        xml, _path = await self.save_config_snapshot(keep_last)
         return xml
 
     def _prune_backups(self, keep_last: int) -> None:
