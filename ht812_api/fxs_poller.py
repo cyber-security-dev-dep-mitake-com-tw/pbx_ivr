@@ -8,6 +8,21 @@ _POLL_INTERVAL = 2.0
 _HOOK_LABELS = {"0": "on-hook", "1": "off-hook"}
 
 
+def _norm_hook(v: str) -> str:
+    """Normalise firmware hook value to '0' or '1' regardless of firmware format."""
+    s = v.strip().lower()
+    if s in ("1", "off hook", "off-hook"):  return "1"
+    if s in ("0", "on hook",  "on-hook"):   return "0"
+    return v
+
+
+def _norm_reg(v: str) -> str:
+    s = v.strip().lower()
+    if s in ("1", "registered"):            return "1"
+    if s in ("0", "not registered"):        return "0"
+    return v
+
+
 class FXSPoller:
     """Polls HT812 FXS hook/reg state every 2 s; emits fxs_hook events on transitions."""
 
@@ -44,7 +59,7 @@ class FXSPoller:
             (1, "P4901", "P4921"),
             (2, "P4902", "P4922"),
         ]:
-            hook = vals.get(hook_key, "")
+            hook = _norm_hook(vals.get(hook_key, ""))
             prev = self._last_hook.get(port)
 
             if prev is None:
@@ -55,10 +70,14 @@ class FXSPoller:
             if hook == prev:
                 continue
 
+            # Ignore transitions to/from empty (session expiry artefact)
+            if not hook or not prev:
+                continue
+
             self._last_hook[port] = hook
             label = _HOOK_LABELS.get(hook, hook or "unknown")
             prev_label = _HOOK_LABELS.get(prev, prev or "unknown")
-            registered = vals.get(reg_key, "") == "1"
+            registered = _norm_reg(vals.get(reg_key, "")) == "1"
 
             event = self._app.state.events.add(
                 CommunicationEventIn(

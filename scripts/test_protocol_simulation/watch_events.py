@@ -28,8 +28,11 @@ Requirements:
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
+
+import _env  # loads project .env into os.environ
 
 try:
     import httpx

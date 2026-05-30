@@ -25,7 +25,10 @@ Requirements:
 import argparse
 import asyncio
 import base64
+import os
 import sys
+
+import _env  # loads project .env into os.environ
 
 try:
     import httpx
@@ -89,8 +92,9 @@ async def _read(client: httpx.AsyncClient, token: str, keys: list[str]) -> dict[
 
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Provision HT812 two-line SIP/TCP")
-    ap.add_argument("--host",       default="192.168.2.1",  help="HT812 IP (default: 192.168.2.1)")
-    ap.add_argument("--password",   default="admin",         help="Admin password (default: admin)")
+    _ht_host = os.environ.get("HT812_HOST", "https://192.168.2.1").replace("https://", "").replace("http://", "")
+    ap.add_argument("--host",       default=_ht_host,        help="HT812 IP")
+    ap.add_argument("--password",   default=os.environ.get("HT812_ADMIN_PASS", "admin"), help="Admin password")
     ap.add_argument("--sip-server", default="192.168.2.2",
                     help="Asterisk host reachable from HT812 (default: 192.168.2.2)")
     ap.add_argument("--sip-port",   default="5060",          help="SIP port (default: 5060)")

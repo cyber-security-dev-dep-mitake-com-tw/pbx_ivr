@@ -35,7 +35,10 @@ Requirements:
 
 import argparse
 import asyncio
+import os
 import sys
+
+import _env  # loads project .env into os.environ
 
 try:
     import httpx
@@ -70,8 +73,8 @@ async def main() -> None:
     ap = argparse.ArgumentParser(description="Send DTMF digits to an Asterisk ARI channel")
     ap.add_argument("--ari",      default="http://localhost:8088/ari",
                     help="ARI base URL (default: http://localhost:8088/ari)")
-    ap.add_argument("--user",     default="ari-user")
-    ap.add_argument("--password", default="changeme_ari")
+    ap.add_argument("--user",     default=os.environ.get("ARI_USER", "ari-user"))
+    ap.add_argument("--password", default=os.environ.get("ARI_PASS", "changeme_ari"))
     ap.add_argument("--channel",  default=None,
                     help="Channel ID — omit to list and pick")
     ap.add_argument("--digits",   required=True,

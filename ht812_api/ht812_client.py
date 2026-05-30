@@ -61,6 +61,22 @@ class HT812AuthError(HT812Error):
     pass
 
 
+def _norm_hook(v: str) -> str:
+    """'On Hook'/'0' → '0';  'Off Hook'/'1' → '1'.  Handles both firmware formats."""
+    s = v.strip().lower()
+    if s in ("1", "off hook", "off-hook"):  return "1"
+    if s in ("0", "on hook",  "on-hook"):   return "0"
+    return v
+
+
+def _norm_reg(v: str) -> str:
+    """'Registered'/'1' → '1';  'Not Registered'/'0' → '0'."""
+    s = v.strip().lower()
+    if s in ("1", "registered"):            return "1"
+    if s in ("0", "not registered"):        return "0"
+    return v
+
+
 class HT812Client:
     def __init__(self) -> None:
         # A single persistent client maintains cookies and connection pooling.
@@ -224,16 +240,16 @@ class HT812Client:
         return {
             "port1": {
                 "port": 1,
-                "hook": vals.get("P4901", ""),
-                "registered": vals.get("P4921", "") == "1",
+                "hook": _norm_hook(vals.get("P4901", "")),
+                "registered": _norm_reg(vals.get("P4921", "")) == "1",
                 "user_id": vals.get("P35", ""),
                 "sip_server": vals.get("P47", ""),
                 "sip_port": vals.get("P48", "5060"),
             },
             "port2": {
                 "port": 2,
-                "hook": vals.get("P4902", ""),
-                "registered": vals.get("P4922", "") == "1",
+                "hook": _norm_hook(vals.get("P4902", "")),
+                "registered": _norm_reg(vals.get("P4922", "")) == "1",
                 "user_id": vals.get("P735", ""),
                 "sip_server": vals.get("P2312", ""),
                 "sip_port": vals.get("P2313", "5060"),

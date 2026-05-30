@@ -39,9 +39,12 @@ Requirements:
 import argparse
 import asyncio
 import json
+import os
 import sys
 import urllib.parse
 from datetime import datetime
+
+import _env  # loads project .env into os.environ
 
 try:
     import httpx
@@ -185,8 +188,8 @@ async def _run(ari_url: str, ws_url: str, user: str, password: str, caller: str,
 def main() -> None:
     ap = argparse.ArgumentParser(description="Simulate an IVR call flow via Asterisk ARI")
     ap.add_argument("--ari",      default="http://localhost:8088/ari")
-    ap.add_argument("--user",     default="ari-user")
-    ap.add_argument("--password", default="changeme_ari")
+    ap.add_argument("--user",     default=os.environ.get("ARI_USER", "ari-user"))
+    ap.add_argument("--password", default=os.environ.get("ARI_PASS", "changeme_ari"))
     ap.add_argument("--caller",   default="1001",
                     help="Caller ID used for the simulated call (default: 1001)")
     ap.add_argument("--scenario", default="support", choices=list(SCENARIOS),
