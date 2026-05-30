@@ -19,6 +19,10 @@ ASTERISK_HOST="${ASTERISK_HOST:-192.168.0.100}"
 HT812_API_URL="${HT812_API_URL:-http://localhost:8000}"
 WEB_URL="${WEB_URL:-http://localhost:3000}"
 
+LOG_ROOT="${LOG_ROOT:-$ROOT_DIR/scripts/test_connections/logs}"
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+LOG_DIR="${LOG_DIR:-$LOG_ROOT/$RUN_ID}"
+
 PASS_COUNT=0
 WARN_COUNT=0
 FAIL_COUNT=0
@@ -55,6 +59,22 @@ run_show() {
   "$@"
 }
 
+init_logs() {
+  mkdir -p "$LOG_DIR"
+  info "debug logs: $LOG_DIR"
+}
+
+save_cmd() {
+  local name="$1"
+  shift
+  mkdir -p "$LOG_DIR"
+  {
+    printf '+ %s\n' "$*"
+    "$@"
+    printf '\nexit=%s\n' "$?"
+  } >"$LOG_DIR/$name" 2>&1
+}
+
 route_iface_for() {
   route -n get "$1" 2>/dev/null | awk '/interface:/ {print $2; exit}'
 }
@@ -74,16 +94,59 @@ iface_mac_for() {
   ifconfig "$1" 2>/dev/null | awk '/ether / {print tolower($2); exit}'
 }
 
+normalize_mac() {
+  awk -F: '{
+    out = ""
+    for (i = 1; i <= NF; i++) {
+      oct = tolower($i)
+      if (length(oct) == 1) oct = "0" oct
+      out = out (i == 1 ? "" : ":") oct
+    }
+    print out
+  }'
+}
+
 arp_remote_resolved_for() {
   local ip="$1"
   local iface="$2"
   local local_mac
-  local_mac="$(iface_mac_for "$iface")"
+  local_mac="$(iface_mac_for "$iface" | normalize_mac)"
   arp_entry_for "$ip" | awk -v local_mac="$local_mac" '
     /\(incomplete\)/ {next}
-    local_mac != "" && tolower($4) == local_mac {next}
+    {
+      mac = tolower($4)
+      split(mac, parts, ":")
+      normalized = ""
+      for (i = 1; i <= length(parts); i++) {
+        oct = parts[i]
+        if (length(oct) == 1) oct = "0" oct
+        normalized = normalized (i == 1 ? "" : ":") oct
+      }
+    }
+    local_mac != "" && normalized == local_mac {next}
     {found=1}
     END {exit found ? 0 : 1}
+  '
+}
+
+arp_remote_mac_for() {
+  local ip="$1"
+  local iface="$2"
+  local local_mac
+  local_mac="$(iface_mac_for "$iface" | normalize_mac)"
+  arp_entry_for "$ip" | awk -v local_mac="$local_mac" '
+    /\(incomplete\)/ {next}
+    {
+      mac = tolower($4)
+      split(mac, parts, ":")
+      normalized = ""
+      for (i = 1; i <= length(parts); i++) {
+        oct = parts[i]
+        if (length(oct) == 1) oct = "0" oct
+        normalized = normalized (i == 1 ? "" : ":") oct
+      }
+      if (local_mac == "" || normalized != local_mac) print normalized
+    }
   '
 }
 
@@ -114,6 +177,18 @@ curl_probe() {
     curl -kfsS --max-time 4 --interface "$iface" "$url" >/dev/null
   else
     curl -kfsS --max-time 4 "$url" >/dev/null
+  fi
+}
+
+curl_probe_verbose() {
+  local url="$1"
+  local outfile="$2"
+  local iface="${3:-}"
+  mkdir -p "$(dirname "$outfile")"
+  if [ -n "$iface" ]; then
+    curl -vk --max-time 6 --interface "$iface" "$url" >"$outfile" 2>&1
+  else
+    curl -vk --max-time 6 "$url" >"$outfile" 2>&1
   fi
 }
 

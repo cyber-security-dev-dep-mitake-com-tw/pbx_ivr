@@ -12,6 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET="${1:-$HT812_WAN_IP}"
 COUNT="${COUNT:-30}"
 
+init_logs
+
 section "USB Ethernet Packet Capture"
 cat <<EOF
 Interface: $USB_IFACE

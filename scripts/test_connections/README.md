@@ -27,6 +27,12 @@ This checks:
 - Docker Compose service state
 - Asterisk PJSIP endpoint state
 
+Each run writes detailed artifacts to:
+
+```text
+scripts/test_connections/logs/<timestamp>/
+```
+
 ## Scan Likely HT812 Addresses
 
 ```bash
@@ -75,6 +81,23 @@ Apply:
 ```bash
 APPLY=1 ./scripts/test_connections/patch_host_route.sh 192.168.0.160
 ```
+
+## Capture and Probe Automatically
+
+Use this when a route is correct but the HT812 still times out:
+
+```bash
+./scripts/test_connections/capture_and_probe.sh 192.168.0.160
+```
+
+or:
+
+```bash
+./scripts/test_connections/capture_and_probe.sh 192.168.2.1
+```
+
+The script starts `tcpdump`, runs HTTP/HTTPS and ping probes, then saves the
+packet trace and probe logs under `scripts/test_connections/logs/<timestamp>/`.
 
 ## Override Defaults
 
