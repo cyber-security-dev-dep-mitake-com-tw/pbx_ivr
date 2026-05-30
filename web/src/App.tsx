@@ -384,7 +384,7 @@ function LineDTMFPanel({
             <div className="fxs-codes">
               <div className="fxs-code-row">
                 <span className="code-badge">P490{lineNum}</span>
-                <span>Hook: <strong>{portStatus?.hook ?? protocol.hookState || "—"}</strong></span>
+                <span>Hook: <strong>{(portStatus?.hook ?? protocol.hookState) || "—"}</strong></span>
                 <span className="code-note">0=on-hook · 1=off-hook</span>
               </div>
               <div className="fxs-code-row">
