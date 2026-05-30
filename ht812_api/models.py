@@ -1,5 +1,7 @@
-from pydantic import BaseModel
+from datetime import datetime
 from typing import Any
+
+from pydantic import BaseModel
 
 
 class PatchConfigRequest(BaseModel):
@@ -32,3 +34,15 @@ class PortStatusResponse(BaseModel):
 
 class SystemInfoResponse(BaseModel):
     raw: Any
+
+
+class BackupFile(BaseModel):
+    filename: str
+    size_bytes: int
+    created_at: datetime
+    path: str
+
+
+class BackupListResponse(BaseModel):
+    count: int
+    backups: list[BackupFile]

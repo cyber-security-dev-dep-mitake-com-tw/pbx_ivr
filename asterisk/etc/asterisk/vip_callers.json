@@ -1,0 +1,4 @@
+{
+  "comment": "Map caller ID numbers to destination extensions. Remove this comment key before adding real entries.",
+  "_example": "5551234567: 1001"
+}

@@ -7,20 +7,33 @@ Communication is via stdin/stdout using the AGI protocol.
 
 Logic:
   - Time-of-day routing: business hours → sales menu, after-hours → voicemail
-  - VIP caller IDs can be routed directly
+  - VIP caller IDs loaded from /etc/asterisk/vip_callers.json (or AGI_VIP_FILE env)
   - Falls back to basic DTMF menu if no rule matches
+
+VIP file format (JSON):
+  { "5551234567": "1001", "5559876543": "1002" }
 """
 
+import json
+import os
 import sys
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
-BUSINESS_START = 9   # 09:00 local
-BUSINESS_END = 17    # 17:00 local
-LOCAL_TZ_OFFSET = -8  # hours from UTC — adjust for your timezone
+BUSINESS_START = int(os.environ.get("BUSINESS_START", "9"))
+BUSINESS_END = int(os.environ.get("BUSINESS_END", "17"))
+LOCAL_TZ_OFFSET = int(os.environ.get("LOCAL_TZ_OFFSET", "-8"))
 
-VIP_CALLERS = {
-    # "5551234567": "1001",  # route this caller directly to extension 1001
-}
+_VIP_FILE = Path(os.environ.get("AGI_VIP_FILE", "/etc/asterisk/vip_callers.json"))
+
+
+def _load_vip_callers() -> dict[str, str]:
+    try:
+        if _VIP_FILE.exists():
+            return json.loads(_VIP_FILE.read_text())
+    except Exception:
+        pass
+    return {}
 
 
 def send(msg: str) -> None:
@@ -35,7 +48,6 @@ def recv() -> str:
 def get_variable(name: str) -> str:
     send(f"GET VARIABLE {name}")
     response = recv()
-    # Response: 200 result=1 (value)
     if "(" in response and ")" in response:
         return response.split("(", 1)[1].rstrip(")")
     return ""
@@ -57,9 +69,9 @@ def playback(sound: str) -> None:
 def wait_digit(timeout: int = 5) -> str:
     send(f"WAIT FOR DIGIT {timeout * 1000}")
     resp = recv()
-    # Response: 200 result=<ascii_code>
     try:
-        code = int(resp.split("=")[-1].strip())
+        code_str = resp.split("=")[-1].strip().split()[0]
+        code = int(code_str)
         return chr(code) if code > 0 else ""
     except (ValueError, IndexError):
         return ""
@@ -73,7 +85,6 @@ def is_business_hours() -> bool:
 
 
 def main() -> None:
-    # Read AGI environment variables sent by Asterisk
     env: dict[str, str] = {}
     while True:
         line = sys.stdin.readline().strip()
@@ -84,22 +95,21 @@ def main() -> None:
             env[key.strip()] = val.strip()
 
     caller_id = env.get("agi_callerid", "unknown")
+    vip_callers = _load_vip_callers()
 
-    # VIP routing
-    if caller_id in VIP_CALLERS:
-        dest = VIP_CALLERS[caller_id]
+    if caller_id in vip_callers:
+        dest = vip_callers[caller_id]
         exec_app("Dial", f"PJSIP/{dest},30")
         send("HANGUP")
         return
 
     if not is_business_hours():
-        # After hours → leave a voicemail
-        playback("after-hours")          # custom sound; falls back silently if missing
+        playback("after-hours")
         exec_app("VoiceMail", "1001@default,u")
         send("HANGUP")
         return
 
-    # Business hours → dynamic prompt + digit collection
+    # Business hours — play menu and collect digit
     playback("press-1-sales")
     digit = wait_digit(8)
 
@@ -108,9 +118,8 @@ def main() -> None:
     elif digit == "2":
         exec_app("Dial", "PJSIP/1002,30,tT")
     elif digit == "0":
-        exec_app("Dial", f"PJSIP/1001,30,tT")
+        exec_app("Dial", "PJSIP/1001,30,tT")
     else:
-        # No valid input — fall back to main DTMF IVR
         goto("ivr-main", "s", "1")
         return
 

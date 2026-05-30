@@ -159,14 +159,25 @@ class HT812Client:
 
     # ------------------------------------------------------------------ public API
 
-    async def get_config_xml(self) -> str:
-        """Download full device config as XML; saves a timestamped backup."""
+    async def get_config_xml(self, keep_last: int = 30) -> str:
+        """Download full device config as XML; saves a timestamped backup and prunes old ones."""
         r = await self._get("/cgi-bin/download_cfg_xml")
         xml = r.text
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         (_BACKUP_DIR / f"ht812_config_{ts}.xml").write_text(xml)
+        self._prune_backups(keep_last)
         return xml
+
+    def _prune_backups(self, keep_last: int) -> None:
+        files = sorted(_BACKUP_DIR.glob("ht812_config_*.xml"), key=lambda p: p.stat().st_mtime)
+        for old in files[:-keep_last]:
+            old.unlink(missing_ok=True)
+
+    async def get_sip_log(self) -> str:
+        """Fetch the live SIP trace log from the device (may be empty on quiet devices)."""
+        r = await self._get("/cgi-bin/api-get_sip")
+        return r.text
 
     async def get_values(self, p_keys: list[str]) -> dict:
         """

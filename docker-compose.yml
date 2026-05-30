@@ -16,12 +16,20 @@ services:
       - asterisk_log:/var/log/asterisk
     networks:
       - pbx
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show uptime"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   ht812_api:
     build: ./ht812_api
     container_name: ht812_api
     restart: unless-stopped
     env_file: .env
+    environment:
+      - BACKUP_KEEP=30
     ports:
       - "8000:8000"
     volumes:
@@ -30,16 +38,31 @@ services:
       - "host.docker.internal:host-gateway"  # reach HT812V2 on LAN
     networks:
       - pbx
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   ari_app:
     build: ./ari_app
     container_name: ari_app
     restart: unless-stopped
     env_file: .env
+    environment:
+      - ARI_ENABLE_RECORDING=false
     depends_on:
-      - asterisk
+      asterisk:
+        condition: service_healthy
     networks:
       - pbx
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
 volumes:
   asterisk_spool:
