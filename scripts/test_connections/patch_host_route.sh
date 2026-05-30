@@ -21,17 +21,7 @@ if [ "${APPLY:-0}" != "1" ]; then
   exit 0
 fi
 
-if ! sudo -n true 2>/dev/null; then
-  cat <<EOF
-ERROR: sudo requires an interactive password.
-Run this in a local Terminal:
-
-  cd "$ROOT_DIR"
-  APPLY=1 ./scripts/test_connections/patch_host_route.sh $TARGET
-
-EOF
-  exit 1
-fi
+require_sudo "APPLY=1 ./scripts/test_connections/patch_host_route.sh $TARGET"
 
 sudo route -n delete -host "$TARGET" >/dev/null 2>&1 || true
 run_show sudo route -n add -host "$TARGET" -interface "$USB_IFACE"

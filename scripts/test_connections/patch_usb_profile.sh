@@ -38,17 +38,7 @@ if [ "${APPLY:-0}" != "1" ]; then
   exit 0
 fi
 
-if ! sudo -n true 2>/dev/null; then
-  cat <<EOF
-ERROR: sudo requires an interactive password.
-Run this in a local Terminal:
-
-  cd "$ROOT_DIR"
-  APPLY=1 ./scripts/test_connections/patch_usb_profile.sh $PROFILE
-
-EOF
-  exit 1
-fi
+require_sudo "APPLY=1 ./scripts/test_connections/patch_usb_profile.sh $PROFILE"
 
 run_show sudo networksetup -setmanual "$USB_SERVICE" "$IP" "$MASK" "0.0.0.0"
 run_show ifconfig "$USB_IFACE"

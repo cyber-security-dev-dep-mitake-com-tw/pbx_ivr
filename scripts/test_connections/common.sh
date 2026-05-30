@@ -64,7 +64,30 @@ route_flags_for() {
 }
 
 arp_entry_for() {
-  arp -an 2>/dev/null | awk -v ip="($1)" '$0 ~ ip {print; found=1} END {if (!found) exit 1}'
+  arp -an 2>/dev/null | awk -v ip="$1" '
+    $0 ~ "^\\? \\(" ip "\\) " {print; found=1}
+    END {if (!found) exit 1}
+  '
+}
+
+require_sudo() {
+  local command_hint="$1"
+  if sudo -n true 2>/dev/null; then
+    return 0
+  fi
+  if [ "${NONINTERACTIVE:-0}" = "1" ]; then
+    cat <<EOF
+ERROR: sudo requires a password and NONINTERACTIVE=1 is set.
+Run this in a local Terminal:
+
+  cd "$ROOT_DIR"
+  $command_hint
+
+EOF
+    return 1
+  fi
+  info "sudo permission is required; macOS may prompt for your password now."
+  sudo -v
 }
 
 arp_resolved_for() {
