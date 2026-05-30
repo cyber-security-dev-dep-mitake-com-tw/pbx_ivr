@@ -315,3 +315,7 @@ def _update_backup_gauge() -> None:
         BACKUP_FILE_COUNT.set(count)
     except Exception:
         pass
+
+# backuo
+@router.post(
+    "/ht812/snapshot-backup",    
