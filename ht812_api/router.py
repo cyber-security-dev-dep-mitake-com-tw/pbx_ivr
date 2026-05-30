@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 import structlog
+from events import CommunicationEventIn
 from ht812_client import HT812AuthError, HT812Client, HT812Error
 from metrics import (
     BACKUP_FILE_COUNT,
@@ -20,6 +21,9 @@ from models import (
     GetValuesResponse,
     PatchConfigRequest,
     PortStatusResponse,
+    ProvisionLine,
+    ProvisionTwoLineRequest,
+    ProvisionTwoLineResponse,
     SystemInfoResponse,
 )
 
@@ -27,6 +31,13 @@ log = structlog.get_logger()
 router = APIRouter(prefix="/ht812", tags=["HT812V2"])
 
 _BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
+_DEFAULT_SIP_SERVER = os.environ.get("ASTERISK_SIP_HOST", "host.docker.internal")
+
+_TRANSPORT_VALUES = {
+    "udp": "0",
+    "tcp": "1",
+    "tls": "2",
+}
 
 
 def _client(request: Request) -> HT812Client:
@@ -119,6 +130,85 @@ async def patch_config(
     return ActionResponse(success=ok, message="Config updated" if ok else "Non-success response from device")
 
 
+@router.post(
+    "/provision/two-line",
+    response_model=ProvisionTwoLineResponse,
+    summary="Provision HT812 FXS1/FXS2 SIP registration values except write-only passwords",
+)
+async def provision_two_line(request: Request, body: ProvisionTwoLineRequest):
+    transport = body.transport.lower()
+    if transport not in _TRANSPORT_VALUES:
+        raise HTTPException(400, "transport must be one of: udp, tcp, tls")
+
+    sip_server = body.sip_server or _DEFAULT_SIP_SERVER
+    params = {
+        # FXS port 1
+        "P47": sip_server,
+        "P48": body.sip_port,
+        "P35": body.line1_extension,
+        "P36": body.line1_extension,
+        "P130": _TRANSPORT_VALUES[transport],
+        "P46": "60",
+        # FXS port 2
+        "P2312": sip_server,
+        "P2313": body.sip_port,
+        "P735": body.line2_extension,
+        "P736": body.line2_extension,
+        "P830": _TRANSPORT_VALUES[transport],
+        "P746": "60",
+    }
+
+    REQUEST_COUNT.labels(endpoint="provision_two_line").inc()
+    with REQUEST_LATENCY.labels(endpoint="provision_two_line").time():
+        try:
+            ok = await _client(request).patch_config(params, apply=body.apply)
+        except HT812Error as e:
+            raise _handle(e)
+
+    event = request.app.state.events.add(CommunicationEventIn(
+        source="ht812_api",
+        type="provision",
+        message="HT812 two-line SIP settings applied" if ok else "HT812 two-line SIP settings returned non-success",
+        data={
+            "sip_server": sip_server,
+            "sip_port": body.sip_port,
+            "transport": transport,
+            "params": list(params.keys()),
+            "passwords_manual": ["P34", "P734"],
+        },
+    ))
+    await request.app.state.event_queue.put(event)
+
+    lines = [
+        ProvisionLine(
+            port=1,
+            extension=body.line1_extension,
+            sip_server=sip_server,
+            sip_port=body.sip_port,
+            transport=transport,
+            password_manual=True,
+        ),
+        ProvisionLine(
+            port=2,
+            extension=body.line2_extension,
+            sip_server=sip_server,
+            sip_port=body.sip_port,
+            transport=transport,
+            password_manual=True,
+        ),
+    ]
+    return ProvisionTwoLineResponse(
+        success=ok,
+        message=(
+            "Non-password SIP settings applied. Set FXS1/FXS2 SIP auth passwords manually in the HT812 UI."
+            if ok
+            else "Non-success response from device"
+        ),
+        lines=lines,
+        params_written=list(params.keys()),
+    )
+
+
 # ------------------------------------------------------------------ actions
 
 @router.post("/reboot", response_model=ActionResponse, summary="Reboot the device (~30s downtime)")
@@ -162,6 +252,24 @@ async def port_status(request: Request):
     except HT812Error as e:
         raise _handle(e)
     return data
+
+
+@router.get("/status/summary", summary="Combined status for the web dashboard")
+async def status_summary(request: Request):
+    REQUEST_COUNT.labels(endpoint="status_summary").inc()
+    try:
+        ports = await _client(request).get_port_status()
+    except HT812Error as e:
+        raise _handle(e)
+    return {
+        "expected": {
+            "transport": "tcp",
+            "sip_port": "5060",
+            "extensions": ["1001", "1002"],
+            "manual_password_fields": ["P34", "P734"],
+        },
+        "ports": ports,
+    }
 
 
 @router.get("/status/system", summary="Product, vendor info from device")

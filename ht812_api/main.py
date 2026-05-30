@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,8 +8,11 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from events import EventStore
+from events_router import router as events_router
 from ht812_client import HT812Client
 from metrics import BACKUP_FILE_COUNT
 from router import router
@@ -48,6 +52,8 @@ async def _scheduled_backup(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.ht812 = HT812Client()
+    app.state.events = EventStore()
+    app.state.event_queue = asyncio.Queue()
 
     # Initialize backup file count gauge
     backup_dir = Path(os.environ.get("BACKUP_DIR", "/backups"))
@@ -82,6 +88,15 @@ app = FastAPI(
 )
 
 app.include_router(router)
+app.include_router(events_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(","),
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health", tags=["Ops"])

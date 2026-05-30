@@ -34,6 +34,7 @@ ARI_USER = os.environ.get("ARI_USER", "ari-user")
 ARI_PASS = os.environ.get("ARI_PASS", "changeme_ari")
 APP_NAME = "ivr-app"
 ENABLE_RECORDING = os.environ.get("ARI_ENABLE_RECORDING", "false").lower() == "true"
+EVENTS_API_URL = os.environ.get("EVENTS_API_URL", "http://ht812_api:8000/events")
 
 _BASE_URL = f"http://{ARI_HOST}:{ARI_PORT}/ari"
 _WS_URL = (
@@ -141,13 +142,51 @@ class ARIClient:
         await self._http.aclose()
 
 
+class EventPublisher:
+    def __init__(self) -> None:
+        self._http = httpx.AsyncClient(timeout=3.0)
+
+    async def publish(
+        self,
+        event_type: str,
+        message: str,
+        *,
+        channel_id: str | None = None,
+        caller: str | None = None,
+        line: str | None = None,
+        digit: str | None = None,
+        data: dict | None = None,
+    ) -> None:
+        try:
+            await self._http.post(
+                EVENTS_API_URL,
+                json={
+                    "source": "ari_app",
+                    "type": event_type,
+                    "message": message,
+                    "channel_id": channel_id,
+                    "caller": caller,
+                    "line": line,
+                    "digit": digit,
+                    "data": data or {},
+                },
+            )
+        except Exception as e:
+            log.debug("event publish failed: %s", e)
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+
 class IVRSession:
     """Manages one active call through the multi-level IVR."""
 
-    def __init__(self, ari: ARIClient, channel_id: str, caller: str) -> None:
+    def __init__(self, ari: ARIClient, events: EventPublisher, channel_id: str, caller: str) -> None:
         self._ari = ari
+        self._events = events
         self.channel_id = channel_id
         self.caller = caller
+        self.line = caller if caller in ("1001", "1002") else None
         self._digit_futures: dict[str, asyncio.Future] = {}
         self._recording_name: str | None = None
         self._bridge_id: str | None = None
@@ -186,6 +225,13 @@ class IVRSession:
     async def run(self) -> None:
         await self._ari.answer(self.channel_id)
         log.info("answered channel=%s caller=%s", self.channel_id, self.caller)
+        await self._events.publish(
+            "call_start",
+            f"Call answered from {self.caller}",
+            channel_id=self.channel_id,
+            caller=self.caller,
+            line=self.line,
+        )
 
         if ENABLE_RECORDING:
             import time
@@ -202,23 +248,46 @@ class IVRSession:
             return
 
         digit = await self._collect_digit("tt-weasels")  # replace with custom welcome
+        if digit is not None:
+            await self._events.publish(
+                "dtmf",
+                f"Main menu digit {digit}",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                digit=digit,
+                data={"menu": "main"},
+            )
 
         if digit is None:
+            await self._events.publish(
+                "timeout",
+                "Main menu timed out",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                data={"menu": "main"},
+            )
             await self._ari.play(self.channel_id, "sound:goodbye")
             await self._cleanup()
             return
 
         if digit == "1":
+            await self._publish_route("Sales menu")
             await self._submenu_sales()
         elif digit == "2":
+            await self._publish_route("Support menu")
             await self._submenu_support()
         elif digit == "0":
+            await self._publish_route("Operator")
             await self._connect_operator()
         elif digit == "8":
+            await self._publish_route("Voicemail")
             await self._voicemail()
         elif digit == "#":
             await self._main_menu(retries)
         else:
+            await self._publish_route("Invalid digit", digit=digit)
             await self._ari.play(self.channel_id, "sound:invalid")
             await self._main_menu(retries + 1)
 
@@ -228,12 +297,24 @@ class IVRSession:
             return
 
         digit = await self._collect_digit("digits/1")  # replace with custom sales prompt
+        if digit is not None:
+            await self._events.publish(
+                "dtmf",
+                f"Sales menu digit {digit}",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                digit=digit,
+                data={"menu": "sales"},
+            )
 
         if digit == "1":
             log.info("Sales - new inquiry, channel=%s", self.channel_id)
+            await self._publish_route("Sales new inquiry to 1001", digit=digit)
             await self._connect_endpoint("PJSIP/1001")
         elif digit == "2":
             log.info("Sales - existing order, channel=%s", self.channel_id)
+            await self._publish_route("Sales existing order to 1001", digit=digit)
             await self._connect_endpoint("PJSIP/1001")
         elif digit == "0" or digit is None:
             await self._main_menu()
@@ -247,12 +328,24 @@ class IVRSession:
             return
 
         digit = await self._collect_digit("digits/2")  # replace with custom support prompt
+        if digit is not None:
+            await self._events.publish(
+                "dtmf",
+                f"Support menu digit {digit}",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                digit=digit,
+                data={"menu": "support"},
+            )
 
         if digit == "1":
             log.info("Support - billing, channel=%s", self.channel_id)
+            await self._publish_route("Support billing to 1002", digit=digit)
             await self._connect_endpoint("PJSIP/1002")
         elif digit == "2":
             log.info("Support - technical, channel=%s", self.channel_id)
+            await self._publish_route("Support technical to 1002", digit=digit)
             await self._connect_endpoint("PJSIP/1002")
         elif digit == "0" or digit is None:
             await self._main_menu()
@@ -272,6 +365,14 @@ class IVRSession:
         self._bridge_id = bridge.get("id")
         if not self._bridge_id:
             log.error("Failed to create bridge for channel=%s", self.channel_id)
+            await self._events.publish(
+                "error",
+                "Bridge creation failed",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                data={"endpoint": endpoint},
+            )
             await self._cleanup()
             return
 
@@ -279,6 +380,14 @@ class IVRSession:
         outbound_id = outbound.get("id")
         if not outbound_id:
             log.error("Failed to dial %s for channel=%s", endpoint, self.channel_id)
+            await self._events.publish(
+                "error",
+                f"Failed to dial {endpoint}",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                data={"endpoint": endpoint},
+            )
             await self._ari.destroy_bridge(self._bridge_id)
             self._bridge_id = None
             await self._cleanup()
@@ -287,6 +396,14 @@ class IVRSession:
         await self._ari.add_to_bridge(self._bridge_id, self.channel_id)
         await self._ari.add_to_bridge(self._bridge_id, outbound_id)
         log.info("Bridge created id=%s inbound=%s outbound=%s", self._bridge_id, self.channel_id, outbound_id)
+        await self._events.publish(
+            "bridge",
+            f"Bridge connected to {endpoint}",
+            channel_id=self.channel_id,
+            caller=self.caller,
+            line=self.line,
+            data={"bridge_id": self._bridge_id, "endpoint": endpoint, "outbound_id": outbound_id},
+        )
 
     async def _voicemail(self) -> None:
         log.info("Voicemail, channel=%s caller=%s", self.channel_id, self.caller)
@@ -294,6 +411,13 @@ class IVRSession:
         await self._cleanup()
 
     async def _cleanup(self) -> None:
+        await self._events.publish(
+            "hangup",
+            "Call cleanup and hangup",
+            channel_id=self.channel_id,
+            caller=self.caller,
+            line=self.line,
+        )
         if self._recording_name:
             await self._ari.stop_recording(self._recording_name)
         if self._bridge_id:
@@ -301,10 +425,22 @@ class IVRSession:
             self._bridge_id = None
         await self._ari.hangup(self.channel_id)
 
+    async def _publish_route(self, route: str, digit: str | None = None) -> None:
+        await self._events.publish(
+            "route",
+            f"Routing to {route}",
+            channel_id=self.channel_id,
+            caller=self.caller,
+            line=self.line,
+            digit=digit,
+            data={"route": route},
+        )
+
 
 class IVRApp:
-    def __init__(self, ari: ARIClient) -> None:
+    def __init__(self, ari: ARIClient, events: EventPublisher) -> None:
         self._ari = ari
+        self._events = events
         self._sessions: dict[str, IVRSession] = {}
 
     async def on_stasis_start(self, event: dict) -> None:
@@ -317,7 +453,14 @@ class IVRApp:
             log.debug("Ignoring outbound channel %s args=%s", cid, event["args"])
             return
 
-        session = IVRSession(self._ari, cid, caller)
+        await self._events.publish(
+            "stasis_start",
+            f"Channel entered ARI Stasis from {caller}",
+            channel_id=cid,
+            caller=caller,
+            line=caller if caller in ("1001", "1002") else None,
+        )
+        session = IVRSession(self._ari, self._events, cid, caller)
         self._sessions[cid] = session
         asyncio.create_task(session.run())
 
@@ -334,6 +477,11 @@ class IVRApp:
         session = self._sessions.pop(cid, None)
         if session:
             session.cancel_pending()
+        await self._events.publish(
+            "channel_destroyed",
+            "Asterisk channel ended",
+            channel_id=cid,
+        )
 
     async def dispatch(self, event: dict) -> None:
         etype = event.get("type")
@@ -347,7 +495,8 @@ class IVRApp:
 
 async def run() -> None:
     ari = ARIClient()
-    app = IVRApp(ari)
+    events = EventPublisher()
+    app = IVRApp(ari, events)
     backoff = 2
 
     log.info("Connecting to Asterisk ARI at %s", _WS_URL.split("?")[0])
@@ -367,6 +516,7 @@ async def run() -> None:
             log.exception("Unexpected error: %s", e)
             await asyncio.sleep(backoff)
     await ari.aclose()
+    await events.aclose()
 
 
 if __name__ == "__main__":
