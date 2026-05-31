@@ -290,6 +290,23 @@ dd {
   border-bottom: 1px solid #d1d5db;
 }
 
+.debug-message {
+  padding: 8px 10px;
+  color: #4b5563;
+  line-height: 1.35;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.debug-log-path {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafb;
+  color: #4b5563;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
 .debug-table {
   width: 100%;
   border-collapse: collapse;

@@ -23,13 +23,16 @@ type Summary = {
     transport: string;
     sip_port: string;
     extensions: string[];
-    manual_password_fields: string[];
+    write_only_password_fields?: string[];
+    manual_password_fields?: string[];
+    password_env_available?: Record<string, boolean>;
   };
   ports: {
     port1: PortStatus;
     port2: PortStatus;
     raw: Record<string, string>;
   };
+  diagnostics?: Record<string, unknown>;
 };
 
 type CommunicationEvent = {
@@ -60,6 +63,17 @@ type ForceRegisterResponse = {
   transport: string;
   params_written: Record<string, string>;
   readback: Record<string, string>;
+  diagnostics?: {
+    debug_log_path?: string;
+    action?: {
+      password_fields_attempted?: string[];
+    };
+    comparison?: {
+      summary?: {
+        mismatch_count?: number;
+      };
+    };
+  };
 };
 
 type BackupListResponse = {
@@ -103,6 +117,14 @@ function App() {
   const [lineFilter, setLineFilter] = useState<LineFilter>("all");
 
   const allRegistered = Boolean(summary?.ports.port1.registered && summary?.ports.port2.registered);
+  const selectedSipPort = regTransport === "tls" ? "5061" : "5060";
+  const liveTransport = summary?.ports.raw?.P130 === "0"
+    ? "UDP"
+    : summary?.ports.raw?.P130 === "1"
+    ? "TCP"
+    : summary?.ports.raw?.P130 === "2"
+    ? "TLS"
+    : "Unknown";
 
   async function loadSummary() {
     setLoading(true);
@@ -183,6 +205,8 @@ function App() {
       const params = new URLSearchParams({
         transport: regTransport,
         sip_server: sipServer.trim(),
+        sip_port: selectedSipPort,
+        write_passwords: "true",
       });
       const res = await fetch(
         `${API_BASE_URL}/ht812/force-register?${params.toString()}`,
@@ -303,7 +327,7 @@ function App() {
             <div className="panel-head">
               <div>
                 <h2>Line Registration</h2>
-                <p>FXS 1 and FXS 2 register to Asterisk over SIP/TCP.</p>
+                <p>FXS 1 and FXS 2 register to Asterisk over the selected SIP transport.</p>
               </div>
               <button className="icon-button" onClick={loadSummary} disabled={loading} title="Refresh status">
                 <RefreshCw size={18} className={loading ? "spin" : ""} />
@@ -319,9 +343,11 @@ function App() {
             <div className="panel side">
               <h2>Provisioning</h2>
               <dl className="kv">
-                <div><dt>SIP transport</dt><dd>UDP</dd></div>
-                <div><dt>SIP port</dt><dd>5060</dd></div>
-                <div><dt>SIP server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
+                <div><dt>Live transport</dt><dd>{liveTransport}</dd></div>
+                <div><dt>Live server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
+                <div><dt>Live port</dt><dd>{summary?.ports.port1.sip_port || "—"}</dd></div>
+                <div><dt>Force target</dt><dd>{sipServer.trim() || "—"}:{selectedSipPort}</dd></div>
+                <div><dt>Passwords</dt><dd>{summary?.expected.password_env_available?.SIP_1001_PASS && summary?.expected.password_env_available?.SIP_1002_PASS ? "env ready" : "check env"}</dd></div>
                 <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
               </dl>
               <label className="field-label" htmlFor="sip-server">
@@ -338,7 +364,7 @@ function App() {
                 {provisioning ? "Applying..." : "Apply two-line settings"}
               </button>
               <div className="transport-picker">
-                <span>Transport:</span>
+                <span>Force transport:</span>
                 {(["udp", "tcp", "tls"] as const).map((t) => (
                   <button
                     key={t}
@@ -354,11 +380,22 @@ function App() {
                 {forceRegistering ? "Forcing..." : `Force Register (${regTransport.toUpperCase()})`}
               </button>
               <p className="note">
-                SIP auth passwords must be entered in the HT812 web UI (P34/P734).
+                Force-register blind-writes write-only auth fields P34/P734/P4120/P4121 from API env vars; the HT812 cannot read them back.
               </p>
               {registerDebug && (
                 <div className="debug-panel">
                   <p className="debug-title">Last force-register readback</p>
+                  <p className="debug-message">{registerDebug.message}</p>
+                  {registerDebug.diagnostics?.action?.password_fields_attempted?.length ? (
+                    <div className="debug-log-path">
+                      Password fields attempted: {registerDebug.diagnostics.action.password_fields_attempted.join(", ")}
+                    </div>
+                  ) : null}
+                  {registerDebug.diagnostics?.debug_log_path && (
+                    <div className="debug-log-path">
+                      {registerDebug.diagnostics.debug_log_path}
+                    </div>
+                  )}
                   <table className="debug-table">
                     <tbody>
                       {Object.entries(registerDebug.readback)
