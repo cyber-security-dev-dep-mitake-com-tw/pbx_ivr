@@ -6,8 +6,8 @@ from pathlib import Path
 
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI
-from fastapi.responses import Response
+from fastapi import FastAPI, Request as FastAPIRequest
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
@@ -42,7 +42,7 @@ _BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "30"))
 
 async def _scheduled_backup(app: FastAPI) -> None:
     try:
-        await app.state.ht812.get_config_xml(keep_last=_BACKUP_KEEP)
+        await app.state.ht812.save_config_snapshot(keep_last=_BACKUP_KEEP)
         log.info("scheduled_backup_completed")
     except Exception as e:
         log.error("scheduled_backup_failed", error=str(e))
@@ -96,13 +96,30 @@ app = FastAPI(
 app.include_router(router)
 app.include_router(events_router)
 
+_CORS_ORIGINS = os.environ.get(
+    "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(","),
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: FastAPIRequest, exc: Exception) -> JSONResponse:
+    """Return JSON 502 with CORS headers so browser clients see the actual error."""
+    origin = request.headers.get("origin", "")
+    cors_header = origin if origin in _CORS_ORIGINS else (_CORS_ORIGINS[0] if _CORS_ORIGINS else "*")
+    log.error("unhandled_exception", error=str(exc), path=request.url.path)
+    return JSONResponse(
+        status_code=502,
+        content={"detail": str(exc)},
+        headers={"Access-Control-Allow-Origin": cors_header},
+    )
 
 
 @app.get("/health", tags=["Ops"])

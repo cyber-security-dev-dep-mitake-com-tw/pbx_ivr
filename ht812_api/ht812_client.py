@@ -98,10 +98,13 @@ class HT812Client:
 
     async def _login(self) -> None:
         p2 = base64.b64encode(_ADMIN_PASS.encode()).decode()
-        r = await self._http.post(
-            "/cgi-bin/dologin",
-            content=f"username={_ADMIN_USER}&P2={p2}",
-        )
+        try:
+            r = await self._http.post(
+                "/cgi-bin/dologin",
+                content=f"username={_ADMIN_USER}&P2={p2}",
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as exc:
+            raise HT812Error(f"Cannot reach HT812 at {_HT812_HOST}: {exc}") from exc
         r.raise_for_status()
         data = r.json()
         if data.get("response") != "success":

@@ -18,6 +18,7 @@ from models import (
     ActionResponse,
     BackupFile,
     BackupListResponse,
+    ForceRegisterResponse,
     GetValuesResponse,
     PatchConfigRequest,
     PortStatusResponse,
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/ht812", tags=["HT812V2"])
 
 _DEFAULT_BACKUP_DIR = Path(__file__).resolve().parent.parent / "backups"
 _BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_DEFAULT_BACKUP_DIR)))
+_BACKUP_KEEP = int(os.environ.get("BACKUP_KEEP", "30"))
 _DEFAULT_SIP_SERVER = os.environ.get("ASTERISK_SIP_HOST", "host.docker.internal")
 
 _TRANSPORT_VALUES = {
@@ -66,7 +68,7 @@ async def get_config(request: Request):
     REQUEST_COUNT.labels(endpoint="get_config").inc()
     with REQUEST_LATENCY.labels(endpoint="get_config").time():
         try:
-            xml = await _client(request).get_config_xml()
+            xml, _ = await _client(request).save_config_snapshot()
         except HT812Error as e:
             raise _handle(e)
     _update_backup_gauge()
@@ -231,6 +233,128 @@ async def provision_two_line(request: Request, body: ProvisionTwoLineRequest):
         ),
         lines=lines,
         params_written=list(params.keys()),
+    )
+
+
+# ------------------------------------------------------------------ snapshot-backup
+
+@router.post(
+    "/snapshot-backup",
+    response_model=BackupFile,
+    summary="Save a timestamped XML config snapshot and return the file metadata",
+)
+async def snapshot_backup(request: Request):
+    REQUEST_COUNT.labels(endpoint="snapshot_backup").inc()
+    try:
+        _, path = await _client(request).save_config_snapshot(keep_last=_BACKUP_KEEP)
+    except HT812Error as e:
+        raise _handle(e)
+    _update_backup_gauge()
+    stat = path.stat()
+    log.info("snapshot_backup_saved", path=str(path))
+    return BackupFile(
+        filename=path.name,
+        size_bytes=stat.st_size,
+        created_at=__import__("datetime").datetime.fromtimestamp(
+            stat.st_mtime, tz=__import__("datetime").timezone.utc
+        ),
+        path=str(path),
+    )
+
+
+# ------------------------------------------------------------------ force-register
+
+@router.post(
+    "/force-register",
+    response_model=ForceRegisterResponse,
+    summary="Write ALL SIP P-values (direct + profile system) and return a full debug readback",
+)
+async def force_register(
+    request: Request,
+    transport: str = Query("udp", description="SIP transport: udp, tcp, tls"),
+):
+    """
+    Writes every SIP-registration-related P-value for both FXS ports — both the
+    legacy direct system (P35/P47/P130) AND the firmware-3.7.5 profile system
+    (P4060/P4090/P4669/P4150) — then reads them all back so you can see exactly
+    what the device accepted. Useful for debugging registration failures.
+
+    Note: SIP auth passwords (P34/P734 and P4120/P4121) are write-only at the
+    firmware level and cannot be verified here; they MUST be set in the HT812
+    web UI.
+    """
+    sip_server = _DEFAULT_SIP_SERVER
+    sip_port   = "5060"
+    transport_code = _TRANSPORT_VALUES.get(transport.lower(), "0")
+
+    params = {
+        # ── Legacy direct system (FXS1) ──────────────────────────────────
+        "P35":  "1001",          "P36":  "1001",
+        "P47":  sip_server,      "P48":  sip_port,
+        "P130": transport_code,  "P46":  "60",
+        # ── Legacy direct system (FXS2) ──────────────────────────────────
+        "P735": "1002",          "P736": "1002",
+        "P2312":sip_server,      "P2313":sip_port,
+        "P830": transport_code,  "P746": "60",
+        "P52":  transport_code,  # global preferred transport
+        # ── Profile system (FXS1, profile row 0) ─────────────────────────
+        "P4060":"1001",          "P4090":"1001",
+        "P4669":sip_server,      "P4150":"1",
+        "P4300":"1",             "P4595":"1",
+        # ── Profile system (FXS2, profile row 1) ─────────────────────────
+        "P4061":"1002",          "P4091":"1002",
+        "P4670":sip_server,      "P4151":"1",
+        "P4301":"2",             "P4596":"2",
+    }
+
+    REQUEST_COUNT.labels(endpoint="force_register").inc()
+    try:
+        ok = await _client(request).patch_config(params, apply=True)
+    except HT812Error as e:
+        raise _handle(e)
+
+    # Read back every written key plus registration status
+    readback_keys = list(params.keys()) + ["P4921", "P4922", "P4901", "P4902", "P8"]
+    try:
+        readback = await _client(request).get_values(readback_keys)
+    except HT812Error:
+        readback = {}
+
+    transport_label = {"0": "UDP", "1": "TCP", "2": "TLS"}.get(transport_code, transport.upper())
+
+    event = request.app.state.events.add(CommunicationEventIn(
+        source="ht812_api",
+        type="force_register",
+        message=f"Force-register: wrote {len(params)} P-values. Reg P4921={readback.get('P4921','?')} P4922={readback.get('P4922','?')}",
+        data={
+            "params_written": params,
+            "readback": readback,
+            "apply_ok": ok,
+        },
+    ))
+    await request.app.state.event_queue.put(event)
+
+    log.info(
+        "force_register",
+        sip_server=sip_server,
+        transport=transport_label,
+        apply_ok=ok,
+        reg1=readback.get("P4921"),
+        reg2=readback.get("P4922"),
+    )
+
+    return ForceRegisterResponse(
+        success=ok,
+        message=(
+            f"Wrote {len(params)} P-values ({transport_label} transport). "
+            f"Reg status: FXS1={readback.get('P4921','?')} FXS2={readback.get('P4922','?')}. "
+            f"SIP passwords (P34/P734, P4120/P4121) must still be set via HT812 web UI."
+        ),
+        sip_server=sip_server,
+        sip_port=sip_port,
+        transport=transport_label,
+        params_written=params,
+        readback=readback,
     )
 
 

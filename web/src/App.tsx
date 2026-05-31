@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Activity, Archive, ArrowRight, Cable, CheckCircle2, ClipboardList,
   DatabaseBackup, Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
-  Server, Settings2, TriangleAlert, Zap,
+  RotateCcw, Server, Settings2, TriangleAlert, Zap,
 } from "lucide-react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
@@ -52,6 +52,16 @@ type BackupFile = {
   path: string;
 };
 
+type ForceRegisterResponse = {
+  success: boolean;
+  message: string;
+  sip_server: string;
+  sip_port: string;
+  transport: string;
+  params_written: Record<string, string>;
+  readback: Record<string, string>;
+};
+
 type BackupListResponse = {
   count: number;
   backups: BackupFile[];
@@ -83,6 +93,9 @@ function App() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
   const [snapshotSaving, setSnapshotSaving] = useState(false);
+  const [forceRegistering, setForceRegistering] = useState(false);
+  const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
+  const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
   const [error, setError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
@@ -96,8 +109,11 @@ function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/ht812/status/summary`);
       if (!res.ok) throw new Error(await res.text());
-      setSummary(await res.json());
+      const data = await res.json();
+      console.log("[PBX] summary loaded:", data);
+      setSummary(data);
     } catch (err) {
+      console.error("[PBX] summary error:", err);
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
       setLoading(false);
@@ -139,17 +155,52 @@ function App() {
     setProvisioning(true);
     setError(null);
     try {
+      console.log("[PBX] provision: calling /ht812/provision/two-line");
       const res = await fetch(`${API_BASE_URL}/ht812/provision/two-line`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transport: "tcp", sip_port: "5060" }),
       });
       if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      console.log("[PBX] provision response:", data);
       await loadSummary();
     } catch (err) {
+      console.error("[PBX] provision error:", err);
       setError(err instanceof Error ? err.message : "Failed to provision HT812");
     } finally {
       setProvisioning(false);
+    }
+  }
+
+  async function forceRegister() {
+    setForceRegistering(true);
+    setRegisterDebug(null);
+    setError(null);
+    try {
+      console.log(`[PBX] force-register: transport=${regTransport}`);
+      const res = await fetch(
+        `${API_BASE_URL}/ht812/force-register?transport=${regTransport}`,
+        { method: "POST" },
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as ForceRegisterResponse;
+      console.log("[PBX] force-register response:", data);
+      console.table(data.readback);
+      console.log("[PBX] P4921 (FXS1 reg):", data.readback["P4921"]);
+      console.log("[PBX] P4922 (FXS2 reg):", data.readback["P4922"]);
+      console.log("[PBX] P47  (FXS1 server):", data.readback["P47"]);
+      console.log("[PBX] P35  (FXS1 user):", data.readback["P35"]);
+      console.log("[PBX] P4060 (profile user):", data.readback["P4060"]);
+      console.log("[PBX] P4669 (profile server):", data.readback["P4669"]);
+      console.log("[PBX] P8   (device mode):", data.readback["P8"]);
+      setRegisterDebug(data);
+      await loadSummary();
+    } catch (err) {
+      console.error("[PBX] force-register error:", err);
+      setError(err instanceof Error ? err.message : "Force register failed");
+    } finally {
+      setForceRegistering(false);
     }
   }
 
@@ -164,6 +215,7 @@ function App() {
     source.onerror = () => setStreamState("closed");
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as CommunicationEvent;
+      console.log(`[PBX] event: ${event.type} | ${event.source} | ${event.message}`, event);
       setEvents((current) => {
         const next = [...current.filter((item) => item.id !== event.id), event];
         return next.slice(-120);
@@ -262,18 +314,51 @@ function App() {
             <div className="panel side">
               <h2>Provisioning</h2>
               <dl className="kv">
-                <div><dt>SIP transport</dt><dd>TCP</dd></div>
+                <div><dt>SIP transport</dt><dd>UDP</dd></div>
                 <div><dt>SIP port</dt><dd>5060</dd></div>
-                <div><dt>Password fields</dt><dd>P34, P734</dd></div>
+                <div><dt>SIP server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
                 <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
               </dl>
               <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
                 <Cable size={18} />
                 {provisioning ? "Applying..." : "Apply two-line settings"}
               </button>
+              <div className="transport-picker">
+                <span>Transport:</span>
+                {(["udp", "tcp", "tls"] as const).map((t) => (
+                  <button
+                    key={t}
+                    className={`filter-btn ${regTransport === t ? "active" : ""}`}
+                    onClick={() => setRegTransport(t)}
+                  >
+                    {t.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <button className="primary force-reg-btn" onClick={forceRegister} disabled={forceRegistering}>
+                <RotateCcw size={18} />
+                {forceRegistering ? "Forcing..." : `Force Register (${regTransport.toUpperCase()})`}
+              </button>
               <p className="note">
-                SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
+                SIP auth passwords must be entered in the HT812 web UI (P34/P734).
               </p>
+              {registerDebug && (
+                <div className="debug-panel">
+                  <p className="debug-title">Last force-register readback</p>
+                  <table className="debug-table">
+                    <tbody>
+                      {Object.entries(registerDebug.readback)
+                        .filter(([, v]) => v !== undefined)
+                        .map(([k, v]) => (
+                          <tr key={k} className={k.startsWith("P492") ? "debug-reg-row" : ""}>
+                            <td className="debug-key">{k}</td>
+                            <td className="debug-val">{v || <em>empty</em>}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
             <div className="panel side">

@@ -238,6 +238,73 @@ dd {
   line-height: 1.45;
 }
 
+.transport-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 0.82rem;
+  color: #607384;
+}
+
+.force-reg-btn {
+  background: #7c3aed;
+  border-color: #7c3aed;
+  margin-top: 8px;
+}
+
+.debug-panel {
+  margin-top: 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.78rem;
+}
+
+.debug-title {
+  padding: 6px 10px;
+  background: #f3f4f6;
+  font-weight: 700;
+  color: #374151;
+  border-bottom: 1px solid #d1d5db;
+}
+
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.debug-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.debug-key {
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  color: #6366f1;
+  font-weight: 700;
+  width: 60px;
+}
+
+.debug-val {
+  color: #111827;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+}
+
+.debug-val em {
+  color: #9ca3af;
+  font-style: normal;
+}
+
+.debug-reg-row {
+  background: #fefce8;
+}
+
+.debug-reg-row .debug-val {
+  font-weight: 700;
+  color: #92400e;
+}
+
 .snapshot-message {
   margin-top: 10px;
   color: #16764c;

@@ -71,3 +71,13 @@ class ProvisionTwoLineResponse(BaseModel):
     message: str
     lines: list[ProvisionLine]
     params_written: list[str]
+
+
+class ForceRegisterResponse(BaseModel):
+    success: bool
+    message: str
+    sip_server: str
+    sip_port: str
+    transport: str
+    params_written: dict[str, str]
+    readback: dict[str, str]
