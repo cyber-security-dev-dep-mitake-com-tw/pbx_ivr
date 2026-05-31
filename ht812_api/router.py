@@ -248,6 +248,7 @@ async def force_register(
     transport: str = Query("udp", description="SIP transport: udp, tcp, tls"),
     sip_server: str | None = Query(None, description="SIP server address visible from the HT812"),
     sip_port: str | None = Query(None, description="SIP server port; defaults to 5061 for TLS, 5060 otherwise"),
+    reboot: bool = Query(False, description="Reboot the HT812 after writing SIP registration settings"),
 ):
     """
     Writes every SIP-registration-related P-value for both FXS ports — both the
@@ -276,7 +277,7 @@ async def force_register(
         "P735": "1002",          "P736": "1002",
         "P2312":sip_server,      "P2313":sip_port,
         "P830": transport_code,  "P746": "60",
-        "P52":  transport_code,  # global preferred transport
+        "P52":  "2",             # NAT traversal: keep-alive
         # ── Profile system (FXS1, profile row 0) ─────────────────────────
         "P4060":"1001",          "P4090":"1001",
         "P4669":sip_server,      "P4150":"1",
@@ -292,6 +293,13 @@ async def force_register(
         ok = await _client(request).patch_config(params, apply=True)
     except HT812Error as e:
         raise _handle(e)
+
+    reboot_ok = False
+    if reboot:
+        try:
+            reboot_ok = await _client(request).reboot()
+        except HT812Error as e:
+            raise _handle(e)
 
     # Read back every written key plus registration status
     readback_keys = list(params.keys()) + ["P4921", "P4922", "P4901", "P4902", "P8"]
@@ -310,6 +318,7 @@ async def force_register(
             "params_written": params,
             "readback": readback,
             "apply_ok": ok,
+            "reboot_ok": reboot_ok,
         },
     ))
     await request.app.state.event_queue.put(event)
@@ -319,6 +328,8 @@ async def force_register(
         sip_server=sip_server,
         transport=transport_label,
         apply_ok=ok,
+        reboot=reboot,
+        reboot_ok=reboot_ok,
         reg1=readback.get("P4921"),
         reg2=readback.get("P4922"),
     )

@@ -246,7 +246,7 @@ Firmware 3.7.5 returns **strings** for status P-values, not `0`/`1`:
 | SIP Server Port | | `P48` | `P2313` |
 | Transport (0=UDP,1=TCP,2=TLS) | | `P130` | `P830` |
 | Registration expiry (s) | | `P46` | `P746` |
-| Global preferred transport | | `P52` | — |
+| NAT traversal | | `P52` | — |
 
 ### 5.2 Firmware-3.7.5 "profile" system (the FXSPort table)
 
@@ -279,6 +279,8 @@ web UI writes to a **completely different** set of P-values:
 | `P8` | Device mode: `0`=Bridge, `1`=NAT Router |
 
 The `force-register` endpoint writes **both** systems at once to remove ambiguity.
+It keeps `P52=2` for NAT keep-alive; transport selection is handled by
+`P130`/`P830`.
 
 ---
 
