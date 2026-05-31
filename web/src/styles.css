@@ -350,6 +350,37 @@ dd {
   font-weight: 700;
 }
 
+.audit-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d8e0e5;
+  border-radius: 8px;
+  background: #f8fafb;
+  font-size: 0.84rem;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.audit-banner.ok {
+  border-color: #b9e0cf;
+  background: #f3fbf7;
+  color: #16764c;
+}
+
+.audit-banner.warn {
+  border-color: #f0d3a8;
+  background: #fff9f0;
+  color: #9a5c00;
+}
+
+.audit-kv {
+  margin-top: 12px;
+}
+
 .sip-trace {
   margin-top: 10px;
   padding: 10px;

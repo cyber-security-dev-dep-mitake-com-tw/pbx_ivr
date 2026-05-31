@@ -134,6 +134,23 @@ def _latest_backup() -> Path | None:
     return files[0] if files else None
 
 
+def _latest_debug_log(suffix: str | None = None) -> Path | None:
+    if not _DEBUG_DIR.exists():
+        return None
+    pattern = f"*_{suffix}.json" if suffix else "*.json"
+    files = sorted(_DEBUG_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def _read_json_file(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
 def _parse_backup_values(path: Path | None, keys: list[str] | None = None) -> dict[str, str]:
     if path is None or not path.exists():
         return {}
@@ -298,6 +315,141 @@ def _asterisk_expected(transport: str | None = None, sip_server: str | None = No
             'docker logs --tail 120 asterisk',
         ],
         "interpretation": "If show contacts is empty and PJSIP logger/logs show no REGISTER, the blocker is before Asterisk: HT812 did not send SIP to the selected server/port.",
+    }
+
+
+def _expected_registration_values(transport_key: str, sip_server: str, sip_port: str) -> dict[str, str]:
+    transport_code = _TRANSPORT_VALUES[transport_key]
+    expected = {
+        "P35": "1001",
+        "P36": "1001",
+        "P47": sip_server,
+        "P48": sip_port,
+        "P130": transport_code,
+        "P735": "1002",
+        "P736": "1002",
+        "P2312": sip_server,
+        "P2313": sip_port,
+        "P830": transport_code,
+        "P52": "2",
+        "P4060": "1001",
+        "P4090": "1001",
+        "P4669": sip_server,
+        "P4150": "1",
+        "P4300": "1",
+        "P4595": "1",
+        "P4061": "1002",
+        "P4091": "1002",
+        "P4670": sip_server,
+        "P4151": "1",
+        "P4301": "2",
+        "P4596": "2",
+    }
+    if _SIP_PASSWORDS["1001"]:
+        expected["P34"] = _SIP_PASSWORDS["1001"]
+        expected["P4120"] = _SIP_PASSWORDS["1001"]
+    if _SIP_PASSWORDS["1002"]:
+        expected["P734"] = _SIP_PASSWORDS["1002"]
+        expected["P4121"] = _SIP_PASSWORDS["1002"]
+    return expected
+
+
+def _registration_audit(
+    *,
+    expected: dict[str, str] | None = None,
+    live_values: dict[str, Any] | None = None,
+    transport: str | None = None,
+    sip_server: str | None = None,
+    sip_port: str | None = None,
+) -> dict[str, Any]:
+    latest_backup = _latest_backup()
+    backup_values = _parse_backup_values(latest_backup)
+    latest_force = _latest_debug_log("force_register")
+    latest_sip_log = _latest_debug_log("sip_log")
+    force_data = _read_json_file(latest_force) or {}
+    sip_data = _read_json_file(latest_sip_log) or {}
+    force_action = force_data.get("action") if isinstance(force_data, dict) else {}
+    force_action = force_action if isinstance(force_action, dict) else {}
+    force_readback = force_data.get("readback") if isinstance(force_data, dict) else {}
+    force_readback = force_readback if isinstance(force_readback, dict) else {}
+    force_applied = bool(force_action.get("apply_ok") or force_action.get("success"))
+
+    snapshot_values = live_values or force_readback or backup_values
+    registration = _registration_interpretation(snapshot_values)
+    reg1 = registration.get("fxs1_registration_raw")
+    reg2 = registration.get("fxs2_registration_raw")
+    registered = bool(registration.get("registered"))
+
+    trace_state = "unknown"
+    sip_log_raw = sip_data.get("sip_log_raw") if isinstance(sip_data, dict) else ""
+    if isinstance(sip_data, dict):
+        if sip_data.get("offline"):
+            trace_state = "offline"
+        elif sip_data.get("sip_log_empty") is True:
+            trace_state = "empty"
+        elif sip_data.get("sip_log_empty") is False:
+            trace_state = "present"
+        elif isinstance(sip_log_raw, str) and sip_log_raw.strip():
+            trace_state = "present"
+
+    if registered:
+        verdict = "registered"
+    elif force_applied and trace_state in ("empty", "offline"):
+        verdict = "configured_but_no_register_observed"
+    elif force_applied and trace_state == "present":
+        verdict = "sip_trace_present_but_not_registered"
+    elif force_applied:
+        verdict = "configured"
+    else:
+        verdict = "no_force_register_audit_found"
+
+    if expected is None and transport and sip_server and sip_port:
+        expected = _expected_registration_values(transport, sip_server, sip_port)
+
+    comparison = _compare_values(expected, snapshot_values, backup_values) if expected else {
+        "rows": [],
+        "mismatches": [],
+        "summary": {
+            "checked_keys": 0,
+            "mismatch_count": 0,
+            "has_live_values": bool(live_values),
+            "has_latest_backup_values": bool(backup_values),
+        },
+    }
+
+    return {
+        "verdict": verdict,
+        "device": {
+            "registered": registered,
+            "fxs1_registration_raw": reg1,
+            "fxs2_registration_raw": reg2,
+            "sip_trace_state": trace_state,
+            "snapshot_source": "live" if live_values else "latest_backup",
+        },
+        "force_register": {
+            "found": bool(force_data),
+            "applied": force_applied,
+            "transport": force_action.get("transport"),
+            "transport_code": force_action.get("transport_code"),
+            "sip_server": force_action.get("sip_server"),
+            "sip_port": force_action.get("sip_port"),
+            "password_fields_attempted": force_action.get("password_fields_attempted", []),
+            "debug_log_path": str(latest_force) if latest_force else None,
+        },
+        "sip_log": {
+            "found": bool(sip_data),
+            "offline": bool(sip_data.get("offline")) if isinstance(sip_data, dict) else False,
+            "empty": bool(sip_data.get("sip_log_empty")) if isinstance(sip_data, dict) else None,
+            "debug_log_path": str(latest_sip_log) if latest_sip_log else None,
+        },
+        "latest_backup": _backup_meta(latest_backup),
+        "latest_backup_values": backup_values,
+        "comparison": comparison,
+        "requested": {
+            "transport": transport,
+            "sip_server": sip_server,
+            "sip_port": sip_port,
+        },
     }
 
 
@@ -799,37 +951,7 @@ async def diagnostics_report(
     sip_server = sip_server or _DEFAULT_SIP_SERVER
     sip_port = sip_port or _TRANSPORT_PORTS[transport_key]
     transport_code = _TRANSPORT_VALUES[transport_key]
-    expected = {
-        "P35": "1001",
-        "P36": "1001",
-        "P47": sip_server,
-        "P48": sip_port,
-        "P130": transport_code,
-        "P735": "1002",
-        "P736": "1002",
-        "P2312": sip_server,
-        "P2313": sip_port,
-        "P830": transport_code,
-        "P52": "2",
-        "P4060": "1001",
-        "P4090": "1001",
-        "P4669": sip_server,
-        "P4150": "1",
-        "P4300": "1",
-        "P4595": "1",
-        "P4061": "1002",
-        "P4091": "1002",
-        "P4670": sip_server,
-        "P4151": "1",
-        "P4301": "2",
-        "P4596": "2",
-    }
-    if _SIP_PASSWORDS["1001"]:
-        expected["P34"] = _SIP_PASSWORDS["1001"]
-        expected["P4120"] = _SIP_PASSWORDS["1001"]
-    if _SIP_PASSWORDS["1002"]:
-        expected["P734"] = _SIP_PASSWORDS["1002"]
-        expected["P4121"] = _SIP_PASSWORDS["1002"]
+    expected = _expected_registration_values(transport_key, sip_server, sip_port)
 
     live_values: dict[str, Any] = {}
     live_error: dict[str, Any] | None = None
@@ -885,6 +1007,66 @@ async def diagnostics_report(
             else "Live diagnostics generated; see live_error if the HT812 was unreachable."
         ),
         "diagnostics": diagnostics,
+    }
+
+
+@router.get(
+    "/status/audit",
+    summary="Offline-safe registration audit from backups and debug logs, with optional live HT812 comparison",
+)
+async def status_audit(
+    request: Request,
+    transport: str = Query("udp", description="Expected transport to audit: udp, tcp, tls"),
+    sip_server: str | None = Query(None, description="Expected SIP server visible from the HT812"),
+    sip_port: str | None = Query(None, description="Expected SIP port; defaults to 5061 for TLS, 5060 otherwise"),
+    live: bool = Query(False, description="When true, also query the HT812 for live values."),
+):
+    transport_key = transport.lower()
+    if transport_key not in _TRANSPORT_VALUES:
+        raise HTTPException(400, "transport must be one of: udp, tcp, tls")
+
+    sip_server = sip_server or _DEFAULT_SIP_SERVER
+    sip_port = sip_port or _TRANSPORT_PORTS[transport_key]
+    expected = _expected_registration_values(transport_key, sip_server, sip_port)
+    live_values: dict[str, Any] = {}
+    live_error: dict[str, Any] | None = None
+    if live:
+        try:
+            live_values = await _client(request).get_values([key for key in _SIP_DIAG_KEYS if key not in _WRITE_ONLY_KEYS])
+        except HT812Error as e:
+            live_error = {"type": type(e).__name__, "message": str(e)}
+
+    audit = _registration_audit(
+        expected=expected,
+        live_values=live_values,
+        transport=transport_key,
+        sip_server=sip_server,
+        sip_port=sip_port,
+    )
+    diagnostics = _diagnostics(
+        request,
+        "status_audit",
+        expected=expected,
+        live=live_values,
+        action={
+            "transport": transport_key,
+            "sip_server": sip_server,
+            "sip_port": sip_port,
+            "live_requested": live,
+            "live_error": live_error,
+        },
+    )
+    return {
+        "success": live_error is None,
+        "message": (
+            "Offline registration audit generated from backups/debug logs."
+            if not live
+            else "Live registration audit generated; see live_error if the HT812 was unreachable."
+        ),
+        "audit": audit,
+        "diagnostics": diagnostics,
+        "live_requested": live,
+        "live_error": live_error,
     }
 
 
@@ -977,6 +1159,7 @@ async def status_summary(request: Request):
                 },
             },
             "ports": _port_snapshot_from_values(backup_values, offline=True),
+            "audit": _registration_audit(),
             "diagnostics": diagnostics,
             "offline": True,
             "error": {
@@ -992,11 +1175,12 @@ async def status_summary(request: Request):
             "extensions": ["1001", "1002"],
             "write_only_password_fields": ["P34", "P734", "P4120", "P4121"],
             "password_env_available": {
-                "SIP_1001_PASS": bool(_SIP_PASSWORDS["1001"]),
-                "SIP_1002_PASS": bool(_SIP_PASSWORDS["1002"]),
+            "SIP_1001_PASS": bool(_SIP_PASSWORDS["1001"]),
+            "SIP_1002_PASS": bool(_SIP_PASSWORDS["1002"]),
             },
         },
         "ports": ports,
+        "audit": _registration_audit(),
         "diagnostics": _diagnostics(request, "status_summary", live=live),
         "offline": False,
     }
@@ -1036,6 +1220,7 @@ async def sip_log(request: Request):
             "sip_log_raw": "",
             "sip_log_empty": True,
             "offline": True,
+            "audit": _registration_audit(),
             "error": {
                 "message": str(e),
                 "offline": True,
@@ -1047,6 +1232,7 @@ async def sip_log(request: Request):
         "sip_log_raw": text,
         "sip_log_empty": not bool(text.strip()),
         "offline": False,
+        "audit": _registration_audit(),
         "diagnostics": diagnostics,
     }
 

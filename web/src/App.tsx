@@ -37,6 +37,7 @@ type Summary = {
     port2: PortStatus;
     raw: Record<string, string>;
   };
+  audit?: RegistrationAudit;
   diagnostics?: Record<string, unknown>;
 };
 
@@ -50,6 +51,53 @@ type SipLogResponse = {
   };
   diagnostics?: {
     debug_log_path?: string;
+  };
+  audit?: RegistrationAudit;
+};
+
+type RegistrationAudit = {
+  verdict?: string;
+  requested?: {
+    transport?: string;
+    sip_server?: string;
+    sip_port?: string;
+  };
+  device?: {
+    registered?: boolean;
+    fxs1_registration_raw?: string | null;
+    fxs2_registration_raw?: string | null;
+    sip_trace_state?: string;
+    snapshot_source?: string;
+  };
+  force_register?: {
+    found?: boolean;
+    applied?: boolean;
+    transport?: string | null;
+    transport_code?: string | null;
+    sip_server?: string | null;
+    sip_port?: string | null;
+    password_fields_attempted?: string[];
+    debug_log_path?: string | null;
+  };
+  sip_log?: {
+    found?: boolean;
+    offline?: boolean;
+    empty?: boolean | null;
+    debug_log_path?: string | null;
+  };
+  latest_backup?: {
+    filename?: string;
+    path?: string;
+    size_bytes?: number;
+    created_at?: string;
+  } | null;
+  comparison?: {
+    summary?: {
+      mismatch_count?: number;
+      has_live_values?: boolean;
+      has_latest_backup_values?: boolean;
+    };
+    mismatches?: Array<Record<string, unknown>>;
   };
 };
 
@@ -128,6 +176,7 @@ function App() {
   const [forceRegistering, setForceRegistering] = useState(false);
   const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
   const [sipLog, setSipLog] = useState<SipLogResponse | null>(null);
+  const [audit, setAudit] = useState<RegistrationAudit | null>(null);
   const [sipLogLoading, setSipLogLoading] = useState(false);
   const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
   const [sipServer, setSipServer] = useState("192.168.2.2");
@@ -188,6 +237,23 @@ function App() {
       setError(err instanceof Error ? err.message : "Failed to load SIP trace");
     } finally {
       setSipLogLoading(false);
+    }
+  }
+
+  async function loadAudit() {
+    try {
+      const params = new URLSearchParams({
+        transport: regTransport,
+        sip_server: sipServer.trim(),
+        sip_port: selectedSipPort,
+        live: "false",
+      });
+      const res = await fetch(`${API_BASE_URL}/ht812/status/audit?${params.toString()}`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as { audit?: RegistrationAudit };
+      setAudit(data.audit ?? null);
+    } catch (err) {
+      console.error("[PBX] audit error:", err);
     }
   }
 
@@ -259,6 +325,7 @@ function App() {
       console.log("[PBX] P8   (device mode):", data.readback["P8"]);
       setRegisterDebug(data);
       await loadSummary();
+      await loadAudit();
     } catch (err) {
       console.error("[PBX] force-register error:", err);
       setError(err instanceof Error ? err.message : "Force register failed");
@@ -271,6 +338,7 @@ function App() {
     loadSummary();
     loadBackups();
     loadSipLog();
+    loadAudit();
   }, []);
 
   useEffect(() => {
@@ -374,6 +442,12 @@ function App() {
             {summary?.error?.message && (
               <p className="snapshot-message">{summary.error.message}</p>
             )}
+            {audit?.verdict && (
+              <div className={`audit-banner ${audit.verdict === "registered" ? "ok" : "warn"}`}>
+                {audit.verdict === "registered" ? <CheckCircle2 size={18} /> : <TriangleAlert size={18} />}
+                <span>{audit.verdict.replace(/_/g, " ")}</span>
+              </div>
+            )}
             <div className="line-grid">
               <LinePanel port={summary?.ports.port1} label="FXS Port 1" expected="1001" />
               <LinePanel port={summary?.ports.port2} label="FXS Port 2" expected="1002" />
@@ -390,6 +464,13 @@ function App() {
                 <div><dt>Force target</dt><dd>{sipServer.trim() || "—"}:{selectedSipPort}</dd></div>
                 <div><dt>Passwords</dt><dd>{summary?.expected.password_env_available?.SIP_1001_PASS && summary?.expected.password_env_available?.SIP_1002_PASS ? "env ready" : "check env"}</dd></div>
                 <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
+              </dl>
+              <dl className="kv compact audit-kv">
+                <div><dt>Audit</dt><dd>{audit?.verdict ? audit.verdict.replace(/_/g, " ") : "—"}</dd></div>
+                <div><dt>Force write</dt><dd>{audit?.force_register?.applied ? "acknowledged" : "not observed"}</dd></div>
+                <div><dt>SIP trace</dt><dd>{audit?.sip_log?.offline ? "offline" : audit?.sip_log?.empty ? "empty" : "present"}</dd></div>
+                <div><dt>Registered</dt><dd>{audit?.device?.registered ? "yes" : "no"}</dd></div>
+                <div><dt>Mismatch</dt><dd>{typeof audit?.comparison?.summary?.mismatch_count === "number" ? audit.comparison.summary.mismatch_count : "—"}</dd></div>
               </dl>
               <label className="field-label" htmlFor="sip-server">
                 Asterisk SIP server
@@ -432,7 +513,7 @@ function App() {
                       Password fields attempted: {registerDebug.diagnostics.action.password_fields_attempted.join(", ")}
                     </div>
                   ) : null}
-                  {registerDebug.diagnostics?.debug_log_path && (
+                {registerDebug.diagnostics?.debug_log_path && (
                     <div className="debug-log-path">
                       {registerDebug.diagnostics.debug_log_path}
                     </div>

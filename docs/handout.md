@@ -75,6 +75,7 @@ which should print `200`).
 **Key endpoints**
 
 - `GET  /ht812/status/summary` — combined FXS1/FXS2 status for the dashboard.
+- `GET  /ht812/status/audit` — offline-safe registration audit from latest backup/debug logs, with optional live comparison.
 - `POST /ht812/provision/two-line` — write standard SIP P-values (UDP/TCP/TLS).
 - `POST /ht812/snapshot-backup` — save a timestamped XML config snapshot.
 - `POST /ht812/force-register?transport=udp|tcp|tls` — **debug tool.** Writes
@@ -103,6 +104,7 @@ live debug log.
 |--------|--------------|
 | `provision_ht812.py` | Writes two-line SIP/TCP config to the HT812 + verifies readback. |
 | `fxs_monitor.py` | Real-time FXS hook/reg monitor with ASCII phone diagram; auto re-logins on session expiry. |
+| `registration_audit.py` | Offline audit of the latest XML backup and debug logs; optionally checks Asterisk contacts. |
 | `watch_events.py` | Tails the `/events/stream` SSE feed with colored, icon-tagged output. |
 | `send_dtmf_to_ivr.py` | Injects DTMF digits into a live ARI channel. |
 | `simulate_call_flow.py` | Originates a test call into the IVR and walks a DTMF scenario (support/sales/operator/main). |
@@ -186,7 +188,9 @@ so there is only ever one device session:
 3. **`fxs_monitor.py` reads through the API** (`GET /ht812/status/ports`) instead
    of logging into the device. Run as many monitors as you want — none touch the
    device login. A `--direct` flag still exists for bring-up before Docker is up.
-4. **`fxs_poller.py`** keeps its exponential backoff (2 s → … → 120 s cap).
+4. **`registration_audit.py`** reads `backups/` and `backups/debug_logs/`
+   directly and prints the current verdict even if the HT812 is unplugged.
+5. **`fxs_poller.py`** keeps its exponential backoff (2 s → … → 120 s cap).
 
 **Which tools touch the device login (after the fix):**
 
