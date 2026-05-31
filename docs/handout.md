@@ -147,15 +147,40 @@ POST /cgi-bin/dologin   username=admin&P2=<base64(password)>
 | `POST /cgi-bin/unit_reset` `reset_type=0\|1\|2` | Factory reset (0=ISP, 1=VoIP, 2=full). |
 | `GET  /cgi-bin/api-get_sip` | Live SIP trace log (empty if device sent no SIP). |
 
-### 4.1 ⚠️ The LOGIN LOCKOUT (read this)
+### 4.1 ⚠️ The LOGIN LOCKOUT — THE #1 RECURRING PROBLEM (read this twice)
 
-After **5 failed logins**, the device locks for **5 minutes** (`remain<N>`
-counts down the attempts left). We triggered this once because the original
-`fxs_poller` re-attempted login every 2 s on session failure.
+After **5 failed logins**, the device locks (`remain<N>` counts down attempts
+left). First lock is **5 minutes**; repeated triggering **escalates to 15
+minutes**.
 
-**Fix applied:** `fxs_poller.py` now uses exponential backoff (2 s → 4 s → … →
-120 s cap) on any error, and treats empty/error reads as a session-expiry signal
-rather than hammering re-login.
+**This was the actual root cause of nearly every "device unreachable" symptom
+in this project.** The password (`Mitake123`) was correct the whole time —
+connections failed because the device was *locked out*, not misconfigured.
+
+**Why it kept happening — the HT812 allows only ONE session** and counts
+failed/competing logins aggressively. We had **multiple clients hitting the
+login endpoint at once**:
+
+1. The `fxs_poller` in the `ht812_api` container (re-logins on session expiry)
+2. Manual Python debug scripts (each opens its own login)
+3. `fxs_monitor.py`
+4. The browser login
+
+When several sessions compete, logins fail → counter climbs → lockout. A locked
+device returns `200` on `GET /` (login page loads) but **every `dologin` returns
+`remain<N>`**, which looks exactly like a wrong password or a dead device.
+
+**Rules to NEVER trip it again:**
+
+- **Only one thing should authenticate at a time.** Before manual debugging,
+  **stop the container**: `docker compose stop ht812_api` (this kills the poller).
+- Never retry `dologin` in a tight loop. `fxs_poller.py` now uses exponential
+  backoff (2 s → … → 120 s) and treats empty/error reads as session-expiry.
+- The browser holds a session too — don't leave it hammering Login while scripts
+  run.
+- If you see `remain<N>`, **STOP immediately** and wait out the full lock
+  (5 or 15 min). Every further attempt resets the clock.
+- The TCP proxy (`ht812_proxy.py`) is safe to leave running — it never logs in.
 
 ### 4.2 ⚠️ Write-only password fields
 
