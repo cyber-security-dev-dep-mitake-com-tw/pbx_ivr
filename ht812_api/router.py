@@ -246,6 +246,8 @@ async def provision_two_line(request: Request, body: ProvisionTwoLineRequest):
 async def force_register(
     request: Request,
     transport: str = Query("udp", description="SIP transport: udp, tcp, tls"),
+    sip_server: str | None = Query(None, description="SIP server address visible from the HT812"),
+    sip_port: str | None = Query(None, description="SIP server port; defaults to 5061 for TLS, 5060 otherwise"),
 ):
     """
     Writes every SIP-registration-related P-value for both FXS ports — both the
@@ -261,8 +263,8 @@ async def force_register(
     if transport_key not in _TRANSPORT_VALUES:
         raise HTTPException(400, "transport must be one of: udp, tcp, tls")
 
-    sip_server = _DEFAULT_SIP_SERVER
-    sip_port = "5061" if transport_key == "tls" else "5060"
+    sip_server = sip_server or _DEFAULT_SIP_SERVER
+    sip_port = sip_port or ("5061" if transport_key == "tls" else "5060")
     transport_code = _TRANSPORT_VALUES[transport_key]
 
     params = {
