@@ -238,6 +238,27 @@ dd {
   line-height: 1.45;
 }
 
+.field-label {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  color: #627788;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.field-label input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid #c8d3da;
+  border-radius: 8px;
+  background: #fff;
+  color: #1b2733;
+  font: inherit;
+  font-weight: 700;
+}
+
 .transport-picker {
   display: flex;
   align-items: center;
