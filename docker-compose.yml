@@ -8,6 +8,7 @@ services:
     ports:
       - "5060:5060/tcp"           # SIP signaling (PJSIP) — TCP primary
       - "5060:5060/udp"           # SIP signaling — UDP fallback
+      - "5061:5061/tcp"           # SIP signaling (PJSIP) — TLS
       - "8088:8088"               # ARI HTTP / WebSocket
       - "10000-10100:10000-10100/udp"  # RTP media streams
     volumes:
