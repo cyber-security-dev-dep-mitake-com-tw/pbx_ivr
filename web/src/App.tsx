@@ -96,6 +96,7 @@ function App() {
   const [forceRegistering, setForceRegistering] = useState(false);
   const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
   const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
+  const [sipServer, setSipServer] = useState("192.168.0.252");
   const [error, setError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
@@ -179,8 +180,12 @@ function App() {
     setError(null);
     try {
       console.log(`[PBX] force-register: transport=${regTransport}`);
+      const params = new URLSearchParams({
+        transport: regTransport,
+        sip_server: sipServer.trim(),
+      });
       const res = await fetch(
-        `${API_BASE_URL}/ht812/force-register?transport=${regTransport}`,
+        `${API_BASE_URL}/ht812/force-register?${params.toString()}`,
         { method: "POST" },
       );
       if (!res.ok) throw new Error(await res.text());
@@ -319,6 +324,15 @@ function App() {
                 <div><dt>SIP server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
                 <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
               </dl>
+              <label className="field-label" htmlFor="sip-server">
+                SIP server
+                <input
+                  id="sip-server"
+                  value={sipServer}
+                  onChange={(event) => setSipServer(event.target.value)}
+                  placeholder="192.168.0.252"
+                />
+              </label>
               <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
                 <Cable size={18} />
                 {provisioning ? "Applying..." : "Apply two-line settings"}
