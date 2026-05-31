@@ -38,6 +38,7 @@ NOTE: /status/systemInfo, /status/portStatus, /status/netStatus are Vue Router S
       routes — they return HTML, not JSON. Data must be fetched via cgi-bin API calls.
 """
 
+import asyncio
 import base64
 import os
 import time
@@ -50,7 +51,8 @@ import httpx
 _HT812_HOST = os.environ.get("HT812_HOST", "https://192.168.0.160")
 _ADMIN_USER = os.environ.get("HT812_ADMIN_USER", "admin")
 _ADMIN_PASS = os.environ.get("HT812_ADMIN_PASS", "admin")
-_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
+_DEFAULT_BACKUP_DIR = Path(__file__).resolve().parent.parent / "backups"
+_BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", str(_DEFAULT_BACKUP_DIR)))
 
 
 class HT812Error(Exception):
@@ -61,7 +63,33 @@ class HT812AuthError(HT812Error):
     pass
 
 
+def _norm_hook(v: str) -> str:
+    """'On Hook'/'0' → '0';  'Off Hook'/'1' → '1'.  Handles both firmware formats."""
+    s = v.strip().lower()
+    if s in ("1", "off hook", "off-hook"):  return "1"
+    if s in ("0", "on hook",  "on-hook"):   return "0"
+    return v
+
+
+def _norm_reg(v: str) -> str:
+    """'Registered'/'1' → '1';  'Not Registered'/'0' → '0'."""
+    s = v.strip().lower()
+    if s in ("1", "registered"):            return "1"
+    if s in ("0", "not registered"):        return "0"
+    return v
+
+
 class HT812Client:
+    """
+    Single-session owner for the HT812.
+
+    The device permits only ONE active admin session and counts failed/competing
+    logins aggressively (5 → lockout). To never trip that, ALL device access is
+    serialized through a single asyncio.Lock and login is single-flight: at most
+    one login is ever in flight, and concurrent callers await the same result
+    instead of each firing their own. See docs/handout.md §4.1.
+    """
+
     def __init__(self) -> None:
         # A single persistent client maintains cookies and connection pooling.
         # Critical: the session token must come from the SAME login session.
@@ -76,15 +104,22 @@ class HT812Client:
             },
         )
         self._session_token: str = ""
+        # One lock serializes every device interaction (auth + request), so the
+        # poller and API handlers can never race into two concurrent logins.
+        self._lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ auth
 
     async def _login(self) -> None:
+        """Authenticate. MUST be called with self._lock held (single-flight)."""
         p2 = base64.b64encode(_ADMIN_PASS.encode()).decode()
-        r = await self._http.post(
-            "/cgi-bin/dologin",
-            content=f"username={_ADMIN_USER}&P2={p2}",
-        )
+        try:
+            r = await self._http.post(
+                "/cgi-bin/dologin",
+                content=f"username={_ADMIN_USER}&P2={p2}",
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.TimeoutException) as exc:
+            raise HT812Error(f"Cannot reach HT812 at {_HT812_HOST}: {exc}") from exc
         r.raise_for_status()
         data = r.json()
         if data.get("response") != "success":
@@ -92,31 +127,15 @@ class HT812Client:
             raise HT812AuthError(
                 f"Login failed: {body}. "
                 "Check HT812_ADMIN_PASS in .env. "
-                "'remain<N>' means N attempts left before lockout (5 min wait to clear)."
+                "'remain<N>' means N attempts left before lockout (5/15 min wait to clear). "
+                "Only one client may hold a session — stop competing logins."
             )
         self._session_token = data["body"]["session_token"]
 
-    async def _ensure_auth(self) -> None:
+    async def _ensure_token(self) -> None:
+        """Lazy login: only authenticate if we hold no token. Lock must be held."""
         if not self._session_token:
             await self._login()
-        else:
-            await self._validate_session()
-
-    async def _validate_session(self) -> None:
-        """Check sessioninfo; re-login if the device says the session has expired."""
-        try:
-            r = await self._http.post(
-                "/cgi-bin/api-get_sessioninfo",
-                content=f"session_token={self._session_token}",
-            )
-            data = r.json()
-            results = data.get("results", [])
-            if results and results[0].get("session_id_expired") == "true":
-                self._session_token = ""
-                await self._login()
-        except Exception:
-            # If we can't reach the device, let the actual call surface the error
-            pass
 
     # ------------------------------------------------------------------ helpers
 
@@ -130,43 +149,60 @@ class HT812Client:
             "_nocache_": str(int(time.time() * 1000)),
         }
 
-    async def _post(self, path: str, body: str = "") -> dict:
-        await self._ensure_auth()
-        r = await self._http.post(path, content=body + self._tok())
-        r.raise_for_status()
-        data = r.json()
+    def _capture_rotated_token(self, data: dict) -> None:
+        # The device rotates the session token on every apply=1 commit.
+        if isinstance(data, dict):
+            body = data.get("body", {})
+            if isinstance(body, dict) and body.get("token"):
+                self._session_token = body["token"]
+
+    @staticmethod
+    def _is_invalid_session(data: dict) -> bool:
         if isinstance(data, dict) and data.get("response") == "error":
             reason = data.get("body", {})
-            if isinstance(reason, dict) and reason.get("reason") == "invalid session":
+            return isinstance(reason, dict) and reason.get("reason") == "invalid session"
+        return False
+
+    async def _post(self, path: str, body: str = "") -> dict:
+        # Serialize the whole auth+request cycle so nothing races into a 2nd login.
+        async with self._lock:
+            await self._ensure_token()
+            r = await self._http.post(path, content=body + self._tok())
+            r.raise_for_status()
+            data = r.json()
+            # Session expired/evicted (e.g. browser logged in) → re-login ONCE.
+            if self._is_invalid_session(data):
                 self._session_token = ""
                 await self._login()
                 r = await self._http.post(path, content=body + self._tok())
                 r.raise_for_status()
                 data = r.json()
-        # The device rotates the session token on every apply=1 commit.
-        # Capture it so subsequent calls don't get "invalid session".
-        if isinstance(data, dict):
-            new_token = data.get("body", {})
-            if isinstance(new_token, dict) and new_token.get("token"):
-                self._session_token = new_token["token"]
-        return data
+            self._capture_rotated_token(data)
+            return data
 
     async def _get(self, path: str, params: dict | None = None) -> httpx.Response:
-        await self._ensure_auth()
-        r = await self._http.get(path, params=self._get_params(params))
-        r.raise_for_status()
-        return r
+        async with self._lock:
+            await self._ensure_token()
+            r = await self._http.get(path, params=self._get_params(params))
+            r.raise_for_status()
+            return r
 
     # ------------------------------------------------------------------ public API
 
-    async def get_config_xml(self, keep_last: int = 30) -> str:
-        """Download full device config as XML; saves a timestamped backup and prunes old ones."""
+    async def save_config_snapshot(self, keep_last: int = 30) -> tuple[str, Path]:
+        """Download full device config as XML, save it, and return the XML plus saved path."""
         r = await self._get("/cgi-bin/download_cfg_xml")
         xml = r.text
         _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        (_BACKUP_DIR / f"ht812_config_{ts}.xml").write_text(xml)
+        path = _BACKUP_DIR / f"ht812_config_{ts}.xml"
+        path.write_text(xml)
         self._prune_backups(keep_last)
+        return xml, path
+
+    async def get_config_xml(self, keep_last: int = 30) -> str:
+        """Download full device config as XML; saves a timestamped backup and prunes old ones."""
+        xml, _path = await self.save_config_snapshot(keep_last)
         return xml
 
     def _prune_backups(self, keep_last: int) -> None:
@@ -224,16 +260,16 @@ class HT812Client:
         return {
             "port1": {
                 "port": 1,
-                "hook": vals.get("P4901", ""),
-                "registered": vals.get("P4921", "") == "1",
+                "hook": _norm_hook(vals.get("P4901", "")),
+                "registered": _norm_reg(vals.get("P4921", "")) == "1",
                 "user_id": vals.get("P35", ""),
                 "sip_server": vals.get("P47", ""),
                 "sip_port": vals.get("P48", "5060"),
             },
             "port2": {
                 "port": 2,
-                "hook": vals.get("P4902", ""),
-                "registered": vals.get("P4922", "") == "1",
+                "hook": _norm_hook(vals.get("P4902", "")),
+                "registered": _norm_reg(vals.get("P4922", "")) == "1",
                 "user_id": vals.get("P735", ""),
                 "sip_server": vals.get("P2312", ""),
                 "sip_port": vals.get("P2313", "5060"),

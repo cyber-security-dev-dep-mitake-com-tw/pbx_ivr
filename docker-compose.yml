@@ -29,6 +29,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      - BACKUP_DIR=/backups
       - BACKUP_KEEP=30
     ports:
       - "8000:8000"
@@ -39,7 +40,7 @@ services:
     networks:
       - pbx
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -52,6 +53,7 @@ services:
     env_file: .env
     environment:
       - ARI_ENABLE_RECORDING=false
+      - EVENTS_API_URL=http://ht812_api:8000/events
     depends_on:
       asterisk:
         condition: service_healthy
@@ -63,6 +65,20 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+  web:
+    build: ./web
+    container_name: pbx_ivr_web
+    restart: unless-stopped
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      ht812_api:
+        condition: service_healthy
+    networks:
+      - pbx
 
 volumes:
   asterisk_spool:

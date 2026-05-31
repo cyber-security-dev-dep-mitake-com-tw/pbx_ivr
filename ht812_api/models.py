@@ -46,3 +46,38 @@ class BackupFile(BaseModel):
 class BackupListResponse(BaseModel):
     count: int
     backups: list[BackupFile]
+
+
+class ProvisionLine(BaseModel):
+    port: int
+    extension: str
+    sip_server: str
+    sip_port: str
+    transport: str
+    password_manual: bool
+
+
+class ProvisionTwoLineRequest(BaseModel):
+    sip_server: str | None = None
+    sip_port: str = "5060"
+    transport: str = "tcp"
+    line1_extension: str = "1001"
+    line2_extension: str = "1002"
+    apply: bool = True
+
+
+class ProvisionTwoLineResponse(BaseModel):
+    success: bool
+    message: str
+    lines: list[ProvisionLine]
+    params_written: list[str]
+
+
+class ForceRegisterResponse(BaseModel):
+    success: bool
+    message: str
+    sip_server: str
+    sip_port: str
+    transport: str
+    params_written: dict[str, str]
+    readback: dict[str, str]
