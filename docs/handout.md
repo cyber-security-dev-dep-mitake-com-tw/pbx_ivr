@@ -170,16 +170,44 @@ When several sessions compete, logins fail → counter climbs → lockout. A loc
 device returns `200` on `GET /` (login page loads) but **every `dologin` returns
 `remain<N>`**, which looks exactly like a wrong password or a dead device.
 
-**Rules to NEVER trip it again:**
+**Architectural fix applied — "single session owner" pattern:**
 
-- **Only one thing should authenticate at a time.** Before manual debugging,
-  **stop the container**: `docker compose stop ht812_api` (this kills the poller).
-- Never retry `dologin` in a tight loop. `fxs_poller.py` now uses exponential
-  backoff (2 s → … → 120 s) and treats empty/error reads as session-expiry.
-- The browser holds a session too — don't leave it hammering Login while scripts
-  run.
-- If you see `remain<N>`, **STOP immediately** and wait out the full lock
-  (5 or 15 min). Every further attempt resets the clock.
+`ht812_api` is now the **sole** authenticator. Everything else reads through it,
+so there is only ever one device session:
+
+1. **Serialized, single-flight auth in `HT812Client`.** One `asyncio.Lock`
+   wraps the entire auth+request cycle. The poller and API handlers can no longer
+   race into two concurrent `dologin` calls (the actual cause of failed logins).
+   At most one login is ever in flight.
+2. **Lazy auth + retry-once.** The client no longer validates the session on
+   every call (that was an extra request each time). It uses the token
+   optimistically and re-logs-in exactly once on an "invalid session" reply
+   (e.g. if the browser evicted it). Fewer logins = fewer chances to thrash.
+3. **`fxs_monitor.py` reads through the API** (`GET /ht812/status/ports`) instead
+   of logging into the device. Run as many monitors as you want — none touch the
+   device login. A `--direct` flag still exists for bring-up before Docker is up.
+4. **`fxs_poller.py`** keeps its exponential backoff (2 s → … → 120 s cap).
+
+**Which tools touch the device login (after the fix):**
+
+| Tool | Authenticates to device? |
+|------|--------------------------|
+| `ht812_api` (poller + handlers) | **Yes — the one owner**, serialized |
+| `fxs_monitor.py` (default) | No — reads the API |
+| `watch_events.py` | No — reads the API SSE stream |
+| `send_dtmf_to_ivr.py`, `simulate_call_flow.py` | No — talk to **Asterisk ARI** |
+| `provision_ht812.py` | Yes — but a deliberate one-shot bootstrap tool |
+| Browser web UI | Yes — only when setting passwords; close it after |
+
+**Remaining human rules:**
+
+- The browser web UI is still a separate session (needed for write-only
+  passwords). When you must use it, do it briefly and **close the tab after** so
+  it doesn't sit competing with the API's session.
+- For direct device debugging (`fxs_monitor.py --direct`, `provision_ht812.py`),
+  **stop the container first**: `docker compose stop ht812_api`.
+- If you ever see `remain<N>`, **STOP all access immediately** and wait out the
+  full lock (5 or 15 min). Every further attempt resets the clock.
 - The TCP proxy (`ht812_proxy.py`) is safe to leave running — it never logs in.
 
 ### 4.2 ⚠️ Write-only password fields

@@ -68,7 +68,7 @@ async def get_config(request: Request):
     REQUEST_COUNT.labels(endpoint="get_config").inc()
     with REQUEST_LATENCY.labels(endpoint="get_config").time():
         try:
-            xml, _ = await _client(request).save_config_snapshot()
+            xml, _ = await _client(request).save_config_snapshot(keep_last=_BACKUP_KEEP)
         except HT812Error as e:
             raise _handle(e)
     _update_backup_gauge()
@@ -105,7 +105,7 @@ async def snapshot_backup(request: Request):
     REQUEST_COUNT.labels(endpoint="snapshot_backup").inc()
     with REQUEST_LATENCY.labels(endpoint="snapshot_backup").time():
         try:
-            _xml, path = await _client(request).save_config_snapshot()
+            _xml, path = await _client(request).save_config_snapshot(keep_last=_BACKUP_KEEP)
         except HT812Error as e:
             raise _handle(e)
 
@@ -233,32 +233,6 @@ async def provision_two_line(request: Request, body: ProvisionTwoLineRequest):
         ),
         lines=lines,
         params_written=list(params.keys()),
-    )
-
-
-# ------------------------------------------------------------------ snapshot-backup
-
-@router.post(
-    "/snapshot-backup",
-    response_model=BackupFile,
-    summary="Save a timestamped XML config snapshot and return the file metadata",
-)
-async def snapshot_backup(request: Request):
-    REQUEST_COUNT.labels(endpoint="snapshot_backup").inc()
-    try:
-        _, path = await _client(request).save_config_snapshot(keep_last=_BACKUP_KEEP)
-    except HT812Error as e:
-        raise _handle(e)
-    _update_backup_gauge()
-    stat = path.stat()
-    log.info("snapshot_backup_saved", path=str(path))
-    return BackupFile(
-        filename=path.name,
-        size_bytes=stat.st_size,
-        created_at=__import__("datetime").datetime.fromtimestamp(
-            stat.st_mtime, tz=__import__("datetime").timezone.utc
-        ),
-        path=str(path),
     )
 
 

@@ -24,19 +24,30 @@ async def list_events(request: Request, limit: int = Query(100, ge=1, le=250)):
 @router.get("/stream", summary="Stream live communication events as Server-Sent Events")
 async def stream_events(request: Request):
     async def event_stream():
-        for event in request.app.state.events.list(limit=50):
-            yield _format_sse(event)
-
-        while True:
-            if await request.is_disconnected():
-                break
-            try:
-                event = await asyncio.wait_for(request.app.state.event_queue.get(), timeout=15)
+        try:
+            for event in request.app.state.events.list(limit=50):
                 yield _format_sse(event)
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(request.app.state.event_queue.get(), timeout=15)
+                    yield _format_sse(event)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _format_sse(event: CommunicationEvent) -> str:
