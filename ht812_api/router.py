@@ -257,9 +257,13 @@ async def force_register(
     firmware level and cannot be verified here; they MUST be set in the HT812
     web UI.
     """
+    transport_key = transport.lower()
+    if transport_key not in _TRANSPORT_VALUES:
+        raise HTTPException(400, "transport must be one of: udp, tcp, tls")
+
     sip_server = _DEFAULT_SIP_SERVER
-    sip_port   = "5060"
-    transport_code = _TRANSPORT_VALUES.get(transport.lower(), "0")
+    sip_port = "5061" if transport_key == "tls" else "5060"
+    transport_code = _TRANSPORT_VALUES[transport_key]
 
     params = {
         # ── Legacy direct system (FXS1) ──────────────────────────────────
