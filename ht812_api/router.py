@@ -255,6 +255,30 @@ def _registration_interpretation(values: dict[str, Any] | None) -> dict[str, Any
     }
 
 
+def _port_snapshot_from_values(values: dict[str, Any], *, offline: bool = False) -> dict[str, Any]:
+    values = values or {}
+    return {
+        "port1": {
+            "port": 1,
+            "hook": str(values.get("P4901", "")) or "unknown",
+            "registered": str(values.get("P4921", "")).lower() in ("1", "registered"),
+            "user_id": values.get("P35", ""),
+            "sip_server": values.get("P47", ""),
+            "sip_port": values.get("P48", "5060"),
+        },
+        "port2": {
+            "port": 2,
+            "hook": str(values.get("P4902", "")) or "unknown",
+            "registered": str(values.get("P4922", "")).lower() in ("1", "registered"),
+            "user_id": values.get("P735", ""),
+            "sip_server": values.get("P2312", ""),
+            "sip_port": values.get("P2313", "5060"),
+        },
+        "raw": values,
+        "offline": offline,
+    }
+
+
 def _asterisk_expected(transport: str | None = None, sip_server: str | None = None, sip_port: str | None = None) -> dict[str, Any]:
     return {
         "expected_contacts": ["1001", "1002"],
@@ -840,10 +864,10 @@ async def diagnostics_report(
                 "P4151=1",
                 "P4300=1",
                 "P4301=2",
-                "P4669=192.168.0.252",
-                "P4670=192.168.0.252",
+                "P4669=192.168.2.2",
+                "P4670=192.168.2.2",
             ],
-            "conclusion": "The API now writes the same profile password P-values P4120/P4121 that the HT812 web UI posts, but debug output redacts their values.",
+            "conclusion": "The API now writes the same profile password P-values P4120/P4121 that the HT812 web UI posts, and the dashboard should target the Asterisk host at 192.168.2.2 instead of the HT812 router address.",
         },
     }
     diagnostics = _diagnostics(
@@ -917,8 +941,17 @@ async def port_status(request: Request):
     try:
         data = await _client(request).get_port_status()
     except HT812Error as e:
-        _diagnostics(request, "port_status_error", error=e)
-        raise _handle(e)
+        latest = _latest_backup()
+        backup_values = _parse_backup_values(latest)
+        diagnostics = _diagnostics(request, "port_status", live={}, error=e)
+        return {
+            **_port_snapshot_from_values(backup_values, offline=True),
+            "diagnostics": diagnostics,
+            "error": {
+                "message": str(e),
+                "offline": True,
+            },
+        }
     live = data.get("raw", {}) if isinstance(data, dict) else {}
     return {**data, "diagnostics": _diagnostics(request, "port_status", live=live)}
 
@@ -929,8 +962,28 @@ async def status_summary(request: Request):
     try:
         ports = await _client(request).get_port_status()
     except HT812Error as e:
-        _diagnostics(request, "status_summary_error", error=e)
-        raise _handle(e)
+        latest = _latest_backup()
+        backup_values = _parse_backup_values(latest)
+        diagnostics = _diagnostics(request, "status_summary", live={}, error=e)
+        return {
+            "expected": {
+                "transport": "selected by force-register/provision request",
+                "sip_port": "5060 for UDP/TCP, 5061 for TLS unless overridden",
+                "extensions": ["1001", "1002"],
+                "write_only_password_fields": ["P34", "P734", "P4120", "P4121"],
+                "password_env_available": {
+                    "SIP_1001_PASS": bool(_SIP_PASSWORDS["1001"]),
+                    "SIP_1002_PASS": bool(_SIP_PASSWORDS["1002"]),
+                },
+            },
+            "ports": _port_snapshot_from_values(backup_values, offline=True),
+            "diagnostics": diagnostics,
+            "offline": True,
+            "error": {
+                "message": str(e),
+                "offline": True,
+            },
+        }
     live = ports.get("raw", {}) if isinstance(ports, dict) else {}
     return {
         "expected": {
@@ -945,6 +998,7 @@ async def status_summary(request: Request):
         },
         "ports": ports,
         "diagnostics": _diagnostics(request, "status_summary", live=live),
+        "offline": False,
     }
 
 
@@ -977,12 +1031,22 @@ async def sip_log(request: Request):
     try:
         text = await _client(request).get_sip_log()
     except HT812Error as e:
-        _diagnostics(request, "sip_log_error", error=e)
-        raise _handle(e)
+        diagnostics = _diagnostics(request, "sip_log", action={"sip_log_empty": True}, error=e)
+        return {
+            "sip_log_raw": "",
+            "sip_log_empty": True,
+            "offline": True,
+            "error": {
+                "message": str(e),
+                "offline": True,
+            },
+            "diagnostics": diagnostics,
+        }
     diagnostics = _diagnostics(request, "sip_log", action={"sip_log_empty": not bool(text.strip())})
     return {
         "sip_log_raw": text,
         "sip_log_empty": not bool(text.strip()),
+        "offline": False,
         "diagnostics": diagnostics,
     }
 

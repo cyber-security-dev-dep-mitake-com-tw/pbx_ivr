@@ -19,6 +19,11 @@ type PortStatus = {
 };
 
 type Summary = {
+  offline?: boolean;
+  error?: {
+    message?: string;
+    offline?: boolean;
+  };
   expected: {
     transport: string;
     sip_port: string;
@@ -33,6 +38,19 @@ type Summary = {
     raw: Record<string, string>;
   };
   diagnostics?: Record<string, unknown>;
+};
+
+type SipLogResponse = {
+  sip_log_raw: string;
+  sip_log_empty: boolean;
+  offline?: boolean;
+  error?: {
+    message?: string;
+    offline?: boolean;
+  };
+  diagnostics?: {
+    debug_log_path?: string;
+  };
 };
 
 type CommunicationEvent = {
@@ -109,8 +127,10 @@ function App() {
   const [snapshotSaving, setSnapshotSaving] = useState(false);
   const [forceRegistering, setForceRegistering] = useState(false);
   const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
+  const [sipLog, setSipLog] = useState<SipLogResponse | null>(null);
+  const [sipLogLoading, setSipLogLoading] = useState(false);
   const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
-  const [sipServer, setSipServer] = useState("192.168.0.252");
+  const [sipServer, setSipServer] = useState("192.168.2.2");
   const [error, setError] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
@@ -154,6 +174,20 @@ function App() {
       setError(err instanceof Error ? err.message : "Failed to load snapshots");
     } finally {
       setBackupLoading(false);
+    }
+  }
+
+  async function loadSipLog() {
+    setSipLogLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/ht812/status/sip-log`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as SipLogResponse;
+      setSipLog(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load SIP trace");
+    } finally {
+      setSipLogLoading(false);
     }
   }
 
@@ -236,6 +270,7 @@ function App() {
   useEffect(() => {
     loadSummary();
     loadBackups();
+    loadSipLog();
   }, []);
 
   useEffect(() => {
@@ -333,6 +368,12 @@ function App() {
                 <RefreshCw size={18} className={loading ? "spin" : ""} />
               </button>
             </div>
+            {summary?.offline && (
+              <p className="snapshot-message">Live HT812 status is offline. Showing last known values from backups.</p>
+            )}
+            {summary?.error?.message && (
+              <p className="snapshot-message">{summary.error.message}</p>
+            )}
             <div className="line-grid">
               <LinePanel port={summary?.ports.port1} label="FXS Port 1" expected="1001" />
               <LinePanel port={summary?.ports.port2} label="FXS Port 2" expected="1002" />
@@ -351,12 +392,12 @@ function App() {
                 <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
               </dl>
               <label className="field-label" htmlFor="sip-server">
-                SIP server
+                Asterisk SIP server
                 <input
                   id="sip-server"
                   value={sipServer}
                   onChange={(event) => setSipServer(event.target.value)}
-                  placeholder="192.168.0.252"
+                  placeholder="192.168.2.2"
                 />
               </label>
               <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
@@ -437,6 +478,26 @@ function App() {
                   backups.slice(0, 8).map((backup) => <SnapshotRow key={backup.filename} backup={backup} />)
                 )}
               </div>
+            </div>
+
+            <div className="panel side">
+              <div className="panel-head compact-head">
+                <div>
+                  <h2>SIP Trace</h2>
+                  <p>
+                    {sipLog?.offline ? "offline" : sipLog?.sip_log_empty ? "empty" : "live"}
+                  </p>
+                </div>
+                <button className="icon-button" onClick={loadSipLog} disabled={sipLogLoading} title="Refresh SIP trace">
+                  <RefreshCw size={18} className={sipLogLoading ? "spin" : ""} />
+                </button>
+              </div>
+              <dl className="kv compact">
+                <div><dt>Trace state</dt><dd>{sipLog?.offline ? "offline" : sipLog?.sip_log_empty ? "empty" : "present"}</dd></div>
+                <div><dt>Log path</dt><dd>{sipLog?.diagnostics?.debug_log_path || "—"}</dd></div>
+              </dl>
+              {sipLog?.error?.message && <p className="snapshot-message">{sipLog.error.message}</p>}
+              <pre className="sip-trace">{sipLog?.sip_log_raw || "No SIP trace captured."}</pre>
             </div>
           </div>
         </section>

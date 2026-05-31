@@ -350,6 +350,22 @@ dd {
   font-weight: 700;
 }
 
+.sip-trace {
+  margin-top: 10px;
+  padding: 10px;
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #d8e1e7;
+  border-radius: 6px;
+  background: #f8fafb;
+  color: #1f2937;
+  font-family: "SF Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .snapshot-list {
   display: grid;
   gap: 8px;
