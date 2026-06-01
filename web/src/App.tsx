@@ -210,16 +210,13 @@ function App() {
 
   // Per-line protocol state derived from the live event stream
   const lineProtocol = useMemo(() => {
-    const state: Record<"1" | "2", {
-      hookLabel: string;
-      hookState: string;
-      dtmfSeq: string[];
-      registered: boolean;
-      lastForwarded?: string | null;
-    }> = {
-      "1": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false, lastForwarded: null },
-      "2": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false, lastForwarded: null },
-    };
+    const blank = () => ({
+      hookLabel: "unknown", hookState: "", dtmfSeq: [] as string[], registered: false,
+      lastForwarded: null as string | null,
+      lastLiveDigit: null as string | null, lastLiveAt: null as string | null,
+      liveCount: 0,
+    });
+    const state: Record<"1" | "2", LineProtocol> = { "1": blank(), "2": blank() };
 
     for (const ev of events) {
       const ln = normalizeLineNum(ev.line);
@@ -232,6 +229,14 @@ function App() {
         state[ln].dtmfSeq = [...state[ln].dtmfSeq, ev.digit].slice(-30);
         if (ln === "2" && ev.data.forwarded_from === "1") {
           state["2"].lastForwarded = ev.digit;
+        }
+        // A LIVE digit is a real one from the telephony path (ari_app), not a
+        // web simulation. This is the evidence that the line actually keyed in.
+        const isLive = ev.source === "ari_app" && ev.data.simulated !== true;
+        if (isLive) {
+          state[ln].lastLiveDigit = ev.digit;
+          state[ln].lastLiveAt = ev.created_at;
+          state[ln].liveCount += 1;
         }
       }
     }
@@ -464,7 +469,10 @@ type LineProtocol = {
   hookState: string;
   dtmfSeq: string[];
   registered: boolean;
-  lastForwarded?: string | null;
+  lastForwarded: string | null;
+  lastLiveDigit: string | null;
+  lastLiveAt: string | null;
+  liveCount: number;
 };
 
 function LineDTMFPanel({
@@ -479,6 +487,7 @@ function LineDTMFPanel({
   const recentDigits = new Set(protocol.dtmfSeq.slice(-5));
   const isOffHook = protocol.hookState === "1" || protocol.hookLabel === "off-hook";
   const hookKnown = protocol.hookLabel !== "unknown";
+  const hasLiveEvidence = protocol.liveCount > 0;
 
   const [mode, setMode] = useState<"simulate" | "live">("simulate");
   const [sending, setSending] = useState<string | null>(null);
@@ -514,6 +523,25 @@ function LineDTMFPanel({
           <p>Extension 100{lineNum} · {portStatus?.sip_server || "—"} · TCP</p>
         </div>
         <div className="badge-group">
+          {hasLiveEvidence && (
+            <div
+              className="live-evidence-badge"
+              title={[
+                `LIVE evidence: ${protocol.liveCount} event${protocol.liveCount === 1 ? "" : "s"}`,
+                protocol.lastLiveDigit ? `last digit ${protocol.lastLiveDigit}` : null,
+                protocol.lastLiveAt ? `last at ${new Date(protocol.lastLiveAt).toLocaleTimeString()}` : null,
+              ].filter(Boolean).join(" · ")}
+            >
+              <Activity size={16} />
+              <div className="live-evidence-copy">
+                <span>LIVE evidence</span>
+                <strong>
+                  {protocol.liveCount} event{protocol.liveCount === 1 ? "" : "s"}
+                  {protocol.lastLiveDigit ? ` · last ${protocol.lastLiveDigit}` : ""}
+                </strong>
+              </div>
+            </div>
+          )}
           <div className={`status-pill ${protocol.registered ? "ok" : "warn"}`}>
             {protocol.registered ? <CheckCircle2 size={16} /> : <TriangleAlert size={16} />}
             {protocol.registered ? "Registered" : "Unregistered"}
