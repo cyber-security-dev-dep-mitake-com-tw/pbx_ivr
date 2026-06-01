@@ -49,6 +49,14 @@ DIGIT_TIMEOUT = 8.0
 MAX_RETRIES = 3
 
 
+def _line_for_caller(caller: str | None) -> str | None:
+    if caller == "1001":
+        return "1"
+    if caller == "1002":
+        return "2"
+    return None
+
+
 class ARIClient:
     def __init__(self) -> None:
         self._http = httpx.AsyncClient(
@@ -186,7 +194,7 @@ class IVRSession:
         self._events = events
         self.channel_id = channel_id
         self.caller = caller
-        self.line = caller if caller in ("1001", "1002") else None
+        self.line = _line_for_caller(caller)
         self._digit_futures: dict[str, asyncio.Future] = {}
         self._recording_name: str | None = None
         self._bridge_id: str | None = None
@@ -494,7 +502,7 @@ class IVRApp:
             f"Channel entered ARI Stasis from {caller}",
             channel_id=cid,
             caller=caller,
-            line=caller if caller in ("1001", "1002") else None,
+            line=_line_for_caller(caller),
         )
         session = IVRSession(self._ari, self._events, cid, caller)
         self._sessions[cid] = session
