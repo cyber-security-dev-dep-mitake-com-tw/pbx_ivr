@@ -215,9 +215,10 @@ function App() {
       hookState: string;
       dtmfSeq: string[];
       registered: boolean;
+      lastForwarded?: string | null;
     }> = {
-      "1": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
-      "2": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
+      "1": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false, lastForwarded: null },
+      "2": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false, lastForwarded: null },
     };
 
     for (const ev of events) {
@@ -229,6 +230,9 @@ function App() {
       }
       if (ev.type === "dtmf" && ev.digit) {
         state[ln].dtmfSeq = [...state[ln].dtmfSeq, ev.digit].slice(-30);
+        if (ln === "2" && ev.data.forwarded_from === "1") {
+          state["2"].lastForwarded = ev.digit;
+        }
       }
     }
 
@@ -460,6 +464,7 @@ type LineProtocol = {
   hookState: string;
   dtmfSeq: string[];
   registered: boolean;
+  lastForwarded?: string | null;
 };
 
 function LineDTMFPanel({
@@ -491,6 +496,12 @@ function LineDTMFPanel({
             <div className={`status-pill ${isOffHook ? "ok" : ""}`}>
               <Phone size={16} />
               {isOffHook ? "Off-hook" : "On-hook"}
+            </div>
+          )}
+          {lineNum === "2" && protocol.lastForwarded && (
+            <div className="status-pill ok" title="Last digit forwarded from Line 1">
+              <ArrowRight size={16} />
+              {`L1→L2: ${protocol.lastForwarded}`}
             </div>
           )}
         </div>

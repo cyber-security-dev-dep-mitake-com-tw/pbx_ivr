@@ -258,6 +258,8 @@ class IVRSession:
                 digit=digit,
                 data={"menu": "main"},
             )
+            # Ultimate goal: Line 1 keypad entries propagate to Line 2.
+            await self._forward_digit_to_line2(digit)
 
         if digit is None:
             await self._events.publish(
@@ -424,6 +426,40 @@ class IVRSession:
             await self._ari.destroy_bridge(self._bridge_id)
             self._bridge_id = None
         await self._ari.hangup(self.channel_id)
+
+    async def _forward_digit_to_line2(self, digit: str) -> None:
+        """
+        Propagate a DTMF digit entered on FXS Line 1 to Line 2.
+
+        Emits a paired set of events so the Protocol page surfaces the hand-off:
+          - a 'route' event describing the Line 1 → Line 2 forward
+          - a 'dtmf' event tagged line='2' so the Line 2 panel's DTMF sequence
+            reflects the propagated digit (data.forwarded_from='1').
+
+        Only Line 1 (caller 1001) drives this; Line 2's own digits are not
+        re-forwarded (no loop). Requires both ports registered to be meaningful;
+        without registration there is no Line-1 channel, so this never fires.
+        """
+        if self.line != "1":
+            return
+        await self._events.publish(
+            "route",
+            f"Line 1 digit {digit} forwarded to Line 2",
+            channel_id=self.channel_id,
+            caller=self.caller,
+            line="1",
+            digit=digit,
+            data={"route": "line1_to_line2", "target_line": "2", "digit": digit},
+        )
+        await self._events.publish(
+            "dtmf",
+            f"Line 2 received forwarded digit {digit} from Line 1",
+            caller="1002",
+            line="2",
+            digit=digit,
+            data={"menu": "forwarded", "forwarded_from": "1", "source_channel": self.channel_id},
+        )
+        log.info("forwarded digit=%s line1->line2 channel=%s", digit, self.channel_id)
 
     async def _publish_route(self, route: str, digit: str | None = None) -> None:
         await self._events.publish(

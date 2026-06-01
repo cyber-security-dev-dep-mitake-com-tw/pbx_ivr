@@ -67,6 +67,7 @@ which should print `200`).
 |------|---------|
 | `ht812_client.py` | Async HTTP client for the HT812 CGI API (login, P-value get/set, reboot, config XML, snapshot). |
 | `fxs_poller.py` | **New.** Polls FXS hook/registration state every 2 s, emits `fxs_hook` events on transitions, with exponential backoff on errors. |
+| `asterisk_client.py` | **New.** Offline-safe Asterisk-side check. Queries ARI `/endpoints/PJSIP/1001\|1002` for the *real* contact state (`online`/`offline`). This is the Asterisk counterpart to `ht812_client` (the device side) — it answers a question the device flag P4921/P4922 cannot: does Asterisk actually hold a live SIP contact right now? Runs entirely on the docker/LAN bridge, so it works with Wi-Fi/internet down. |
 | `router.py` | REST endpoints (status, provision, snapshot, force-register, reboot, factory-reset). |
 | `main.py` | App wiring, scheduler, CORS, global exception handler. |
 | `events.py` / `events_router.py` | In-memory event store + SSE stream (`/events/stream`). |
@@ -75,23 +76,42 @@ which should print `200`).
 **Key endpoints**
 
 - `GET  /ht812/status/summary` — combined FXS1/FXS2 status for the dashboard.
-- `GET  /ht812/status/audit` — offline-safe registration audit from latest backup/debug logs, with optional live comparison.
+- `GET  /ht812/status/audit?transport=tcp&live=true` — **three-way** registration
+  audit. Correlates **device flag** (P4921/P4922) vs **Asterisk contact state**
+  (via ARI) vs **written/expected config**, and returns a single `verdict`
+  (e.g. `registered_confirmed_both_sides`,
+  `device_says_registered_but_asterisk_has_no_contact`,
+  `asterisk_online_but_device_flag_stale`, `configured_but_neither_side_registered`).
+  Defaults to `live=true`; if the HT812 is unreachable it **falls back to the latest
+  backup** and stamps `offline:true` + `snapshot_source:latest_backup` so the UI
+  never presents stale data as current. Asterisk is the source of truth when reachable.
+- `GET  /ht812/diag/registration-bundle` — **one offline-safe JSON blob** aggregating
+  the latest force-register log + audit + device SIP trace + Asterisk endpoint state.
+  Designed to be read by a CLI AI agent or pasted whole when debugging.
 - `POST /ht812/provision/two-line` — write standard SIP P-values (UDP/TCP/TLS).
 - `POST /ht812/snapshot-backup` — save a timestamped XML config snapshot.
-- `POST /ht812/force-register?transport=udp|tcp|tls` — **debug tool.** Writes
+- `POST /ht812/force-register?transport=tcp|tls|udp` — **debug tool.** Writes
   *every* SIP-related P-value (both legacy direct system **and** the firmware-3.7.5
   profile system) then reads them all back so you can see exactly what stuck.
+  **Default transport is now TCP** (first-pass order TCP → TLS → UDP). After writing
+  it auto-captures the device SIP trace and the Asterisk contact state, so each
+  attempt records what the device *and* Asterisk saw.
 - `GET  /events/stream` — Server-Sent Events feed of DTMF, hook, route, provision.
 
 ### 3.2 Frontend — `web/src/App.tsx` (React + Vite)
 
 Three tabs:
 
-1. **Setup** — line-registration status cards, Provisioning panel (with a
-   **UDP / TCP / TLS transport picker** and a **Force Register (debug)** button
-   that renders a full P-value readback table), and Snapshots list.
+1. **Setup** — line-registration status cards, Provisioning panel, Snapshots list,
+   and a **Registration Audit panel**. The audit panel shows the three-way
+   `verdict`, `snapshot_source`/offline state, per-endpoint Asterisk state
+   (`PJSIP/1001`, `PJSIP/1002`), the captured device SIP-trace excerpt, and a
+   **Force-register over TCP** button. It replaces the old backup-only comparison
+   that could show stale data as current.
 2. **Protocol** — per-line DTMF keypad (last 5 keys highlighted live), DTMF
-   sequence, and FXS hook-state indicator with the underlying P-value codes.
+   sequence, and FXS hook-state indicator with the underlying P-value codes. The
+   **Line 2 panel shows an `L1→L2: <digit>` indicator** when a digit entered on
+   Line 1 has been propagated to Line 2 (see §6.1).
 3. **Timeline** — live SSE event feed with per-line filter and type-colored icons.
 
 Every API call and SSE event is `console.log`'d with a `[PBX]` prefix
@@ -308,6 +328,24 @@ docker exec asterisk asterisk -rx "pjsip set logger on"    # live SIP trace
 `extensions.conf` routes inbound FXS calls into `ivr-main` (DTMF menu), with
 `9`→AGI IVR and `*`→ARI Stasis app (`ivr-app`).
 
+### 6.1 Line 1 → Line 2 DTMF propagation
+
+**Goal:** DTMF digits entered on FXS Line 1 propagate to Line 2, observable live on
+the Protocol page.
+
+**Mechanism (`ari_app/ivr_ari.py`):** when a Line 1 (caller `1001`) session collects
+a digit in the main menu, `_forward_digit_to_line2()` emits a paired set of events
+through the existing `EventPublisher` → `/events` → SSE pipeline:
+
+- a `route` event (`line=1`, `route=line1_to_line2`) describing the hand-off, and
+- a `dtmf` event tagged `line=2`, `data.forwarded_from=1`, so the Line 2 panel's
+  DTMF sequence reflects the propagated digit and shows the `L1→L2: <digit>` pill.
+
+Only Line 1 drives this (no re-forward loop). **Prerequisite:** both ports must be
+registered — without registration there is no Line 1 SIP channel, no DTMF events,
+and the Protocol panels stay empty. So the registration fix in §7 is a hard
+dependency, not a side quest.
+
 ---
 
 ## 7. SIP Registration Debugging Journey (chronological)
@@ -339,15 +377,35 @@ The lines would not register. Each hypothesis tested and the result:
 10. **Device went physically unreachable** — ARP for `192.168.2.1` shows
     `(incomplete)`: no L2 reply. **Open item — requires physical power-cycle.**
 
+11. **TLS-first was a silent blocker** — the debug logs showed the last
+    force-register wrote **TLS:5061** to `192.168.2.2`. TLS against Asterisk's
+    self-signed cert means the HT812 must trust that cert; it silently fails the
+    handshake and never sends REGISTER. → Default transport changed to **TCP**
+    (order TCP → TLS → UDP); TLS is not a first-pass target. ✅
+12. **The audit itself was misleading** — it ran with `live=false` and compared
+    against a stale backup (server `192.168.0.252`), and there was **no programmatic
+    Asterisk-side check** at all. → Added `asterisk_client.py` (ARI endpoint state)
+    and a three-way verdict; audit now defaults `live=true` with offline fallback
+    and a `snapshot_source` stamp. ✅
+13. **Password mismatch ruled out** — device UI confirms `Mitake123` on both ports,
+    matching `pjsip.conf`. Not the blocker.
+
 ### Current open item
 
-The HT812 stopped answering even ARP after the last reboot. This is physical-layer:
+The HT812 device tunnel (`host.docker.internal:18443`) is **frequently down** in
+direct-LAN mode — when it is, live device calls fail with `Cannot reach HT812 …`.
+This is the expected offline scenario; all diagnostics now degrade gracefully and
+still return a verdict from the Asterisk side + backups. If the device is also
+physically unreachable (ARP `(incomplete)`), it is physical-layer:
 
 - Confirm Power LED solid; confirm link light on the **NET2 (LAN)** port.
 - 30-second power cycle (unplug power, wait 30 s, replug).
 - When back: `curl -sk https://192.168.2.1/ -o /dev/null -w "%{http_code}"` → `200`.
-- Then in the dashboard: **Force Register (TCP)** and read the P4921/P4922 rows in
-  the debug table.
+- Then: `curl -X POST 'http://localhost:8000/ht812/force-register?transport=tcp'`,
+  `docker exec asterisk asterisk -rx "pjsip show contacts"` (want 1001/1002 Avail),
+  and `GET /ht812/status/audit?transport=tcp&live=true` (want
+  `registered_confirmed_both_sides`). Or read the whole picture in one shot via
+  `GET /ht812/diag/registration-bundle`.
 
 ---
 
