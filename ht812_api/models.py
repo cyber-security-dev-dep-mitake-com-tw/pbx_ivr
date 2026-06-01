@@ -21,11 +21,13 @@ class PatchConfigRequest(BaseModel):
 
 class GetValuesResponse(BaseModel):
     values: dict[str, Any]
+    diagnostics: dict[str, Any] | None = None
 
 
 class ActionResponse(BaseModel):
     success: bool
     message: str
+    diagnostics: dict[str, Any] | None = None
 
 
 class PortStatusResponse(BaseModel):
@@ -41,11 +43,13 @@ class BackupFile(BaseModel):
     size_bytes: int
     created_at: datetime
     path: str
+    diagnostics: dict[str, Any] | None = None
 
 
 class BackupListResponse(BaseModel):
     count: int
     backups: list[BackupFile]
+    diagnostics: dict[str, Any] | None = None
 
 
 class ProvisionLine(BaseModel):
@@ -71,6 +75,7 @@ class ProvisionTwoLineResponse(BaseModel):
     message: str
     lines: list[ProvisionLine]
     params_written: list[str]
+    diagnostics: dict[str, Any] | None = None
 
 
 class ForceRegisterResponse(BaseModel):
@@ -81,3 +86,4 @@ class ForceRegisterResponse(BaseModel):
     transport: str
     params_written: dict[str, str]
     readback: dict[str, str]
+    diagnostics: dict[str, Any] | None = None

@@ -8,7 +8,9 @@ COPY etc/asterisk/ /etc/asterisk/
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
+EXPOSE 5060/tcp
 EXPOSE 5060/udp
+EXPOSE 5061/tcp
 EXPOSE 8088
 EXPOSE 10000-10100/udp
 

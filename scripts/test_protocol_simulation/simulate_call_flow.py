@@ -77,6 +77,8 @@ async def _originate(client: httpx.AsyncClient, caller: str) -> dict:
     r = await client.post(
         "/channels",
         params={
+            # DTMF injected on the ;2 leg reaches the Stasis ;1 leg as a received
+            # digit (ChannelDtmfReceived) that ari_app acts on.
             "endpoint":  "Local/s@ivr-main",
             "app":       "ivr-app",
             "callerId":  caller,
@@ -86,6 +88,24 @@ async def _originate(client: httpx.AsyncClient, caller: str) -> dict:
     if r.status_code not in (200, 201):
         sys.exit(f"\nOriginate failed: HTTP {r.status_code}\n{r.text[:300]}\n")
     return r.json()
+
+
+async def _find_sibling_leg(client: httpx.AsyncClient, stasis_name: str) -> str | None:
+    """
+    Given the Stasis ;1 leg name (e.g. 'Local/s@ivr-main-00000003;1'), find the
+    id of its ;2 sibling. DTMF sent on ;2 is received on ;1 → ari_app sees it.
+    """
+    if not stasis_name.endswith(";1"):
+        return None
+    sibling_name = stasis_name[:-2] + ";2"
+    try:
+        r = await client.get("/channels")
+        for ch in r.json():
+            if ch.get("name") == sibling_name:
+                return ch.get("id")
+    except Exception:
+        pass
+    return None
 
 
 async def _dtmf(client: httpx.AsyncClient, channel_id: str, digit: str) -> None:
@@ -128,7 +148,7 @@ async def _run(ari_url: str, ws_url: str, user: str, password: str, caller: str,
         deadline = asyncio.get_event_loop().time() + 30
         seq_task: asyncio.Task | None = None
 
-        async def _inject_sequence(start_time: float) -> None:
+        async def _inject_sequence(inject_id: str) -> None:
             base = asyncio.get_event_loop().time()
             for wait, digit in steps:
                 elapsed = asyncio.get_event_loop().time() - base
@@ -139,7 +159,8 @@ async def _run(ari_url: str, ws_url: str, user: str, password: str, caller: str,
                     )
                     await asyncio.sleep(remaining)
                 base = asyncio.get_event_loop().time()
-                await _dtmf(client, channel_id, digit)
+                # Inject on the ;2 leg so ari_app receives it as a caller keypress.
+                await _dtmf(client, inject_id, digit)
 
             await asyncio.sleep(2.0)
             print(f"\n[{ts()}] Sequence complete — hanging up …")
@@ -157,7 +178,14 @@ async def _run(ari_url: str, ws_url: str, user: str, password: str, caller: str,
 
                     if etype == "StasisStart" and seq_task is None:
                         print(f"[{ts()}] {GREEN}StasisStart{R} — IVR session active.\n")
-                        seq_task = asyncio.create_task(_inject_sequence(asyncio.get_event_loop().time()))
+                        stasis_name = event.get("channel", {}).get("name", "")
+                        leg2 = await _find_sibling_leg(client, stasis_name)
+                        inject_id = leg2 or channel_id
+                        if leg2:
+                            print(f"  [{ts()}] {DIM}Injecting DTMF on caller leg {leg2}{R}")
+                        else:
+                            print(f"  [{ts()}] {YELLOW}sibling ;2 leg not found — falling back to Stasis leg{R}")
+                        seq_task = asyncio.create_task(_inject_sequence(inject_id))
 
                     elif etype == "ChannelDtmfReceived":
                         d = event.get("digit", "")

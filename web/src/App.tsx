@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity, Archive, ArrowRight, Cable, CheckCircle2, ClipboardList,
-  DatabaseBackup, Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
-  RotateCcw, Server, Settings2, TriangleAlert, Zap,
+  Activity, ArrowRight, Cable, CheckCircle2, ClipboardList,
+  Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
+  Server, Settings2, TriangleAlert, Zap,
 } from "lucide-react";
 import { createRoot } from "react-dom/client";
+// Ignore missing type declarations for CSS side-effect import
+// @ts-ignore
 import "./styles.css";
+
+// Provide ImportMeta typing for Vite env to satisfy TypeScript
+declare global {
+  interface ImportMetaEnv {
+    readonly VITE_API_BASE_URL?: string;
+  }
+
+  interface ImportMeta {
+    readonly env: ImportMetaEnv;
+  }
+}
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -32,6 +45,44 @@ type Summary = {
   };
 };
 
+type AsteriskEndpoint = {
+  state: string;
+  registered: boolean;
+  channel_count: number;
+  port: number;
+};
+
+type RegistrationAudit = {
+  verdict: string;
+  snapshot_source?: string;
+  device_offline?: boolean;
+  device: {
+    registered: boolean;
+    fxs1_registration_raw?: string | null;
+    fxs2_registration_raw?: string | null;
+    sip_trace_state?: string;
+  };
+  asterisk: {
+    reachable: boolean;
+    both_registered: boolean;
+    endpoints: Record<string, AsteriskEndpoint>;
+    error?: string | null;
+  };
+  sip_log: {
+    found: boolean;
+    offline: boolean;
+    empty?: boolean | null;
+    raw?: string;
+  };
+};
+
+type AuditResponse = {
+  audit: RegistrationAudit;
+  offline?: boolean;
+  snapshot_source?: string;
+  live_error?: { message: string } | null;
+};
+
 type CommunicationEvent = {
   id: string;
   created_at: string;
@@ -43,28 +94,6 @@ type CommunicationEvent = {
   line?: string | null;
   digit?: string | null;
   data: Record<string, unknown>;
-};
-
-type BackupFile = {
-  filename: string;
-  size_bytes: number;
-  created_at: string;
-  path: string;
-};
-
-type ForceRegisterResponse = {
-  success: boolean;
-  message: string;
-  sip_server: string;
-  sip_port: string;
-  transport: string;
-  params_written: Record<string, string>;
-  readback: Record<string, string>;
-};
-
-type BackupListResponse = {
-  count: number;
-  backups: BackupFile[];
 };
 
 type Tab = "setup" | "protocol" | "timeline";
@@ -84,22 +113,50 @@ function normalizeLineNum(line: string | null | undefined): "1" | "2" | null {
   return null;
 }
 
+function isSimulatedEvent(ev: CommunicationEvent): boolean {
+  return ev.source === "web_sim" || ev.data.simulated === true;
+}
+
+function isLiveTelephonyEvent(ev: CommunicationEvent): boolean {
+  return ev.source === "ari_app" && !isSimulatedEvent(ev);
+}
+
+function eventDigit(ev: CommunicationEvent): string {
+  return ev.digit || (typeof ev.data.digit === "string" ? ev.data.digit : "");
+}
+
+function isLine1ToLine2Forward(ev: CommunicationEvent): boolean {
+  const line = normalizeLineNum(ev.line);
+  return Boolean(
+    eventDigit(ev)
+    && (
+      (
+        ev.type === "dtmf"
+        && line === "2"
+        && ev.data.forwarded_from === "1"
+      )
+      || (
+        ev.type === "route"
+        && line === "1"
+        && ev.data.route === "line1_to_line2"
+        && ev.data.target_line === "2"
+      )
+    ),
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("setup");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [events, setEvents] = useState<CommunicationEvent[]>([]);
-  const [backups, setBackups] = useState<BackupFile[]>([]);
   const [loading, setLoading] = useState(false);
-  const [backupLoading, setBackupLoading] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
-  const [snapshotSaving, setSnapshotSaving] = useState(false);
-  const [forceRegistering, setForceRegistering] = useState(false);
-  const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
-  const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
   const [error, setError] = useState<string | null>(null);
-  const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
   const [lineFilter, setLineFilter] = useState<LineFilter>("all");
+  const [audit, setAudit] = useState<AuditResponse | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [forcing, setForcing] = useState(false);
 
   const allRegistered = Boolean(summary?.ports.port1.registered && summary?.ports.port2.registered);
 
@@ -109,45 +166,41 @@ function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/ht812/status/summary`);
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      console.log("[PBX] summary loaded:", data);
-      setSummary(data);
+      setSummary(await res.json());
     } catch (err) {
-      console.error("[PBX] summary error:", err);
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadBackups() {
-    setBackupLoading(true);
+  // load backup
+  async function loadBackup(){}
+
+  async function loadAudit() {
+    setAuditLoading(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/ht812/backups`);
+      const res = await fetch(`${API_BASE_URL}/ht812/status/audit?transport=tcp&live=true`);
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as BackupListResponse;
-      setBackups(data.backups);
+      setAudit(await res.json());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load snapshots");
+      setError(err instanceof Error ? err.message : "Failed to load registration audit");
     } finally {
-      setBackupLoading(false);
+      setAuditLoading(false);
     }
   }
 
-  async function createSnapshotBackup() {
-    setSnapshotSaving(true);
-    setBackupMessage(null);
+  async function forceRegister() {
+    setForcing(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE_URL}/ht812/snapshot-backup`, { method: "POST" });
+      const res = await fetch(`${API_BASE_URL}/ht812/force-register?transport=tcp`, { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
-      const saved = await res.json() as BackupFile;
-      setBackupMessage(`Saved ${saved.filename}`);
-      await loadBackups();
+      await Promise.all([loadSummary(), loadAudit()]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save snapshot");
+      setError(err instanceof Error ? err.message : "Force-register failed");
     } finally {
-      setSnapshotSaving(false);
+      setForcing(false);
     }
   }
 
@@ -155,59 +208,21 @@ function App() {
     setProvisioning(true);
     setError(null);
     try {
-      console.log("[PBX] provision: calling /ht812/provision/two-line");
       const res = await fetch(`${API_BASE_URL}/ht812/provision/two-line`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transport: "tcp", sip_port: "5060" }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      console.log("[PBX] provision response:", data);
       await loadSummary();
     } catch (err) {
-      console.error("[PBX] provision error:", err);
       setError(err instanceof Error ? err.message : "Failed to provision HT812");
     } finally {
       setProvisioning(false);
     }
   }
 
-  async function forceRegister() {
-    setForceRegistering(true);
-    setRegisterDebug(null);
-    setError(null);
-    try {
-      console.log(`[PBX] force-register: transport=${regTransport}`);
-      const res = await fetch(
-        `${API_BASE_URL}/ht812/force-register?transport=${regTransport}`,
-        { method: "POST" },
-      );
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as ForceRegisterResponse;
-      console.log("[PBX] force-register response:", data);
-      console.table(data.readback);
-      console.log("[PBX] P4921 (FXS1 reg):", data.readback["P4921"]);
-      console.log("[PBX] P4922 (FXS2 reg):", data.readback["P4922"]);
-      console.log("[PBX] P47  (FXS1 server):", data.readback["P47"]);
-      console.log("[PBX] P35  (FXS1 user):", data.readback["P35"]);
-      console.log("[PBX] P4060 (profile user):", data.readback["P4060"]);
-      console.log("[PBX] P4669 (profile server):", data.readback["P4669"]);
-      console.log("[PBX] P8   (device mode):", data.readback["P8"]);
-      setRegisterDebug(data);
-      await loadSummary();
-    } catch (err) {
-      console.error("[PBX] force-register error:", err);
-      setError(err instanceof Error ? err.message : "Force register failed");
-    } finally {
-      setForceRegistering(false);
-    }
-  }
-
-  useEffect(() => {
-    loadSummary();
-    loadBackups();
-  }, []);
+  useEffect(() => { loadSummary(); loadAudit(); }, []);
 
   useEffect(() => {
     const source = new EventSource(`${API_BASE_URL}/events/stream`);
@@ -215,7 +230,6 @@ function App() {
     source.onerror = () => setStreamState("closed");
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as CommunicationEvent;
-      console.log(`[PBX] event: ${event.type} | ${event.source} | ${event.message}`, event);
       setEvents((current) => {
         const next = [...current.filter((item) => item.id !== event.id), event];
         return next.slice(-120);
@@ -228,15 +242,14 @@ function App() {
 
   // Per-line protocol state derived from the live event stream
   const lineProtocol = useMemo(() => {
-    const state: Record<"1" | "2", {
-      hookLabel: string;
-      hookState: string;
-      dtmfSeq: string[];
-      registered: boolean;
-    }> = {
-      "1": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
-      "2": { hookLabel: "unknown", hookState: "", dtmfSeq: [], registered: false },
-    };
+    const blank = () => ({
+      hookLabel: "unknown", hookState: "", dtmfSeq: [] as string[], registered: false,
+      lastForwarded: null as string | null,
+      lastForwardedMode: null as "live" | "simulated" | null,
+      lastLiveDigit: null as string | null, lastLiveAt: null as string | null,
+      liveCount: 0,
+    });
+    const state: Record<"1" | "2", LineProtocol> = { "1": blank(), "2": blank() };
 
     for (const ev of events) {
       const ln = normalizeLineNum(ev.line);
@@ -247,6 +260,17 @@ function App() {
       }
       if (ev.type === "dtmf" && ev.digit) {
         state[ln].dtmfSeq = [...state[ln].dtmfSeq, ev.digit].slice(-30);
+        if (ln === "2" && ev.data.forwarded_from === "1") {
+          state["2"].lastForwarded = ev.digit;
+          state["2"].lastForwardedMode = isLiveTelephonyEvent(ev) ? "live" : "simulated";
+        }
+        // A LIVE digit is a real one from the telephony path (ari_app), not a
+        // web simulation. This is the evidence that the line actually keyed in.
+        if (isLiveTelephonyEvent(ev)) {
+          state[ln].lastLiveDigit = ev.digit;
+          state[ln].lastLiveAt = ev.created_at;
+          state[ln].liveCount += 1;
+        }
       }
     }
 
@@ -256,6 +280,45 @@ function App() {
     }
     return state;
   }, [events, summary]);
+
+  const liveHandoffEvidence = useMemo(() => {
+    const liveForwarded = events
+      .filter((ev) => {
+        return isLine1ToLine2Forward(ev) && isLiveTelephonyEvent(ev);
+      })
+      .map((ev) => ({
+        digit: eventDigit(ev),
+        created_at: ev.created_at,
+        id: ev.id,
+      }));
+
+    const simulatedForwarded = events
+      .filter((ev) => {
+        return isLine1ToLine2Forward(ev) && isSimulatedEvent(ev);
+      })
+      .map((ev) => ({
+        digit: eventDigit(ev),
+        created_at: ev.created_at,
+        id: ev.id,
+      }));
+
+    const latest = liveForwarded.at(-1) ?? null;
+    const latestSimulated = simulatedForwarded.at(-1) ?? null;
+    const latestDigit = latest?.digit || null;
+    return {
+      count: liveForwarded.length,
+      latestDigit,
+      latestAt: latest?.created_at ?? null,
+      latestId: latest?.id ?? null,
+      hasLive: liveForwarded.length > 0,
+      simulatedCount: simulatedForwarded.length,
+      latestSimulatedDigit: latestSimulated?.digit || null,
+      latestSimulatedAt: latestSimulated?.created_at ?? null,
+      hasSimulated: simulatedForwarded.length > 0,
+      fromLine: "1" as const,
+      toLine: "2" as const,
+    };
+  }, [events]);
 
   const filteredEvents = useMemo(() => {
     if (lineFilter === "all") return latestEvents;
@@ -310,84 +373,30 @@ function App() {
             </div>
           </div>
 
-          <div className="side-stack">
-            <div className="panel side">
-              <h2>Provisioning</h2>
-              <dl className="kv">
-                <div><dt>SIP transport</dt><dd>UDP</dd></div>
-                <div><dt>SIP port</dt><dd>5060</dd></div>
-                <div><dt>SIP server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
-                <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
-              </dl>
-              <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
-                <Cable size={18} />
-                {provisioning ? "Applying..." : "Apply two-line settings"}
-              </button>
-              <div className="transport-picker">
-                <span>Transport:</span>
-                {(["udp", "tcp", "tls"] as const).map((t) => (
-                  <button
-                    key={t}
-                    className={`filter-btn ${regTransport === t ? "active" : ""}`}
-                    onClick={() => setRegTransport(t)}
-                  >
-                    {t.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              <button className="primary force-reg-btn" onClick={forceRegister} disabled={forceRegistering}>
-                <RotateCcw size={18} />
-                {forceRegistering ? "Forcing..." : `Force Register (${regTransport.toUpperCase()})`}
-              </button>
-              <p className="note">
-                SIP auth passwords must be entered in the HT812 web UI (P34/P734).
-              </p>
-              {registerDebug && (
-                <div className="debug-panel">
-                  <p className="debug-title">Last force-register readback</p>
-                  <table className="debug-table">
-                    <tbody>
-                      {Object.entries(registerDebug.readback)
-                        .filter(([, v]) => v !== undefined)
-                        .map(([k, v]) => (
-                          <tr key={k} className={k.startsWith("P492") ? "debug-reg-row" : ""}>
-                            <td className="debug-key">{k}</td>
-                            <td className="debug-val">{v || <em>empty</em>}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div className="panel side">
-              <div className="panel-head compact-head">
-                <div>
-                  <h2>Snapshots</h2>
-                  <p>{backups.length} saved XML backups</p>
-                </div>
-                <button className="icon-button" onClick={loadBackups} disabled={backupLoading} title="Refresh snapshots">
-                  <RefreshCw size={18} className={backupLoading ? "spin" : ""} />
-                </button>
-              </div>
-              <button className="primary" onClick={createSnapshotBackup} disabled={snapshotSaving}>
-                <DatabaseBackup size={18} />
-                {snapshotSaving ? "Saving..." : "Save snapshot"}
-              </button>
-              {backupMessage && <p className="snapshot-message">{backupMessage}</p>}
-              <div className="snapshot-list">
-                {backups.length === 0 ? (
-                  <div className="snapshot-empty">
-                    <Archive size={17} />
-                    No snapshots found
-                  </div>
-                ) : (
-                  backups.slice(0, 8).map((backup) => <SnapshotRow key={backup.filename} backup={backup} />)
-                )}
-              </div>
-            </div>
+          <div className="panel side">
+            <h2>Provisioning</h2>
+            <dl className="kv">
+              <div><dt>SIP transport</dt><dd>TCP</dd></div>
+              <div><dt>SIP port</dt><dd>5060</dd></div>
+              <div><dt>Password fields</dt><dd>P34, P734</dd></div>
+              <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
+            </dl>
+            <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
+              <Cable size={18} />
+              {provisioning ? "Applying..." : "Apply two-line settings"}
+            </button>
+            <p className="note">
+              SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
+            </p>
           </div>
+
+          <AuditPanel
+            audit={audit}
+            loading={auditLoading}
+            forcing={forcing}
+            onRefresh={loadAudit}
+            onForce={forceRegister}
+          />
         </section>
       )}
 
@@ -409,6 +418,48 @@ function App() {
               <Radio size={17} />
               {streamState}
             </div>
+          </div>
+          <div className="timeline-evidence">
+            {liveHandoffEvidence.hasLive ? (
+              <div className="timeline-evidence-card live-evidence-badge">
+                <CheckCircle2 size={18} />
+                <div className="live-evidence-copy">
+                  <span>Line 1 key proof</span>
+                  <strong>
+                    LIVE HANDSET CONFIRMED: Line {liveHandoffEvidence.fromLine} forwarded key {liveHandoffEvidence.latestDigit || "#"} toward Line {liveHandoffEvidence.toLine}
+                  </strong>
+                  <small>
+                    {liveHandoffEvidence.count} forwarded event{liveHandoffEvidence.count === 1 ? "" : "s"}
+                    {liveHandoffEvidence.latestAt ? ` · ${new Date(liveHandoffEvidence.latestAt).toLocaleTimeString()}` : ""}
+                    {" · "}
+                    Line {liveHandoffEvidence.toLine} response ignored
+                  </small>
+                </div>
+              </div>
+            ) : liveHandoffEvidence.hasSimulated ? (
+              <div className="timeline-evidence-card timeline-evidence-simulated">
+                <TriangleAlert size={18} />
+                <div className="live-evidence-copy">
+                  <span>SIMULATION ONLY</span>
+                  <strong>No physical Line 1 key proof yet; latest simulated L1→L2 digit was {liveHandoffEvidence.latestSimulatedDigit || "#"}</strong>
+                  <small>
+                    {liveHandoffEvidence.simulatedCount} simulated forwarded event{liveHandoffEvidence.simulatedCount === 1 ? "" : "s"}
+                    {liveHandoffEvidence.latestSimulatedAt ? ` · ${new Date(liveHandoffEvidence.latestSimulatedAt).toLocaleTimeString()}` : ""}
+                    {" · "}
+                    Need `ari_app` forwarded DTMF from physical Line 1
+                  </small>
+                </div>
+              </div>
+            ) : (
+              <div className="timeline-evidence-card timeline-evidence-empty">
+                <TriangleAlert size={18} />
+                <div className="live-evidence-copy">
+                  <span>LIVE evidence</span>
+                  <strong>No physical Line 1 key proof captured yet</strong>
+                  <small>Use the real handset on Line 1, then press #. Line 2 does not need to answer.</small>
+                </div>
+              </div>
+            )}
           </div>
           <div className="filter-bar">
             <span>Line:</span>
@@ -435,28 +486,73 @@ function App() {
   );
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
+const VERDICT_TONE: Record<string, "ok" | "warn" | "bad"> = {
+  registered_confirmed_both_sides: "ok",
+  registered: "ok",
+  asterisk_online_but_device_flag_stale: "warn",
+  device_says_registered_but_asterisk_has_no_contact: "bad",
+  sip_trace_present_but_not_registered: "bad",
+  configured_but_neither_side_registered: "bad",
+  neither_side_registered: "bad",
+  configured_but_no_register_observed: "warn",
+  configured: "warn",
+  no_force_register_audit_found: "warn",
+};
 
-function SnapshotRow({ backup }: { backup: BackupFile }) {
-  const created = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(backup.created_at));
+function AuditPanel({
+  audit, loading, forcing, onRefresh, onForce,
+}: {
+  audit: AuditResponse | null;
+  loading: boolean;
+  forcing: boolean;
+  onRefresh: () => void;
+  onForce: () => void;
+}) {
+  const a = audit?.audit;
+  const verdict = a?.verdict ?? "unknown";
+  const tone = VERDICT_TONE[verdict] ?? "warn";
+  const ast = a?.asterisk;
+  const sipRaw = a?.sip_log?.raw?.trim();
 
   return (
-    <article className="snapshot-row" title={backup.path}>
-      <Archive size={17} />
-      <div>
-        <strong>{backup.filename}</strong>
-        <span>{created} · {formatBytes(backup.size_bytes)}</span>
+    <div className="panel side">
+      <div className="panel-head">
+        <div>
+          <h2>Registration Audit</h2>
+          <p>Three-way: device flag · Asterisk contact · written config.</p>
+        </div>
+        <button className="icon-button" onClick={onRefresh} disabled={loading} title="Re-run audit">
+          <RefreshCw size={18} className={loading ? "spin" : ""} />
+        </button>
       </div>
-    </article>
+
+      <div className={`reg ${tone === "ok" ? "ok" : "warn"}`} style={{ marginBottom: 10 }}>
+        {verdict.replace(/_/g, " ")}
+      </div>
+
+      <dl className="kv compact">
+        <div><dt>Snapshot</dt><dd>{audit?.snapshot_source ?? "-"}{audit?.offline ? " (device offline)" : ""}</dd></div>
+        <div><dt>Device flags</dt><dd>FXS1={a?.device?.fxs1_registration_raw ?? "?"} · FXS2={a?.device?.fxs2_registration_raw ?? "?"}</dd></div>
+        <div><dt>Asterisk</dt><dd>{ast ? (ast.reachable ? (ast.both_registered ? "both online" : "not both online") : "unreachable") : "-"}</dd></div>
+        {ast?.endpoints && Object.entries(ast.endpoints).map(([ext, ep]) => (
+          <div key={ext}><dt>PJSIP/{ext}</dt><dd>{ep.state} ({ep.channel_count} ch)</dd></div>
+        ))}
+        {ast?.error && <div><dt>ARI error</dt><dd>{ast.error}</dd></div>}
+        <div><dt>SIP trace</dt><dd>{a?.device?.sip_trace_state ?? "-"}</dd></div>
+      </dl>
+
+      {sipRaw && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="section-label">Device SIP trace</summary>
+          <pre className="sip-trace">{sipRaw.slice(-4000)}</pre>
+        </details>
+      )}
+
+      <button className="primary" onClick={onForce} disabled={forcing} style={{ marginTop: 12 }}>
+        <Zap size={18} />
+        {forcing ? "Force-registering (TCP)…" : "Force-register over TCP"}
+      </button>
+    </div>
   );
 }
 
@@ -487,6 +583,11 @@ type LineProtocol = {
   hookState: string;
   dtmfSeq: string[];
   registered: boolean;
+  lastForwarded: string | null;
+  lastForwardedMode: "live" | "simulated" | null;
+  lastLiveDigit: string | null;
+  lastLiveAt: string | null;
+  liveCount: number;
 };
 
 function LineDTMFPanel({
@@ -501,6 +602,33 @@ function LineDTMFPanel({
   const recentDigits = new Set(protocol.dtmfSeq.slice(-5));
   const isOffHook = protocol.hookState === "1" || protocol.hookLabel === "off-hook";
   const hookKnown = protocol.hookLabel !== "unknown";
+  const hasLiveEvidence = protocol.liveCount > 0;
+
+  const [mode, setMode] = useState<"simulate" | "live">("live");
+  const [sending, setSending] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<string | null>(null);
+
+  async function pressKey(digit: string) {
+    setSending(digit);
+    setLastResult(null);
+    try {
+      const ep = mode === "simulate" ? "simulate" : "send";
+      const res = await fetch(
+        `${API_BASE_URL}/dtmf/${ep}?line=${lineNum}&digit=${encodeURIComponent(digit)}`,
+        { method: "POST" },
+      );
+      const body = await res.json();
+      if (body.ok) {
+        setLastResult(mode === "simulate" ? `simulated ${digit}` : `sent ${digit} to Asterisk live channel`);
+      } else {
+        setLastResult(body.reason || body.error || "no active call");
+      }
+    } catch (err) {
+      setLastResult(err instanceof Error ? err.message : "request failed");
+    } finally {
+      setSending(null);
+    }
+  }
 
   return (
     <div className="panel dtmf-panel">
@@ -510,6 +638,25 @@ function LineDTMFPanel({
           <p>Extension 100{lineNum} · {portStatus?.sip_server || "—"} · TCP</p>
         </div>
         <div className="badge-group">
+          {hasLiveEvidence && (
+            <div
+              className="live-evidence-badge"
+              title={[
+                `LIVE evidence: ${protocol.liveCount} event${protocol.liveCount === 1 ? "" : "s"}`,
+                protocol.lastLiveDigit ? `last digit ${protocol.lastLiveDigit}` : null,
+                protocol.lastLiveAt ? `last at ${new Date(protocol.lastLiveAt).toLocaleTimeString()}` : null,
+              ].filter(Boolean).join(" · ")}
+            >
+              <Activity size={16} />
+              <div className="live-evidence-copy">
+                <span>LIVE evidence</span>
+                <strong>
+                  {protocol.liveCount} event{protocol.liveCount === 1 ? "" : "s"}
+                  {protocol.lastLiveDigit ? ` · last ${protocol.lastLiveDigit}` : ""}
+                </strong>
+              </div>
+            </div>
+          )}
           <div className={`status-pill ${protocol.registered ? "ok" : "warn"}`}>
             {protocol.registered ? <CheckCircle2 size={16} /> : <TriangleAlert size={16} />}
             {protocol.registered ? "Registered" : "Unregistered"}
@@ -520,24 +667,60 @@ function LineDTMFPanel({
               {isOffHook ? "Off-hook" : "On-hook"}
             </div>
           )}
+          {lineNum === "2" && protocol.lastForwarded && (
+            <div
+              className={`status-pill ${protocol.lastForwardedMode === "live" ? "ok" : "sim"}`}
+              title={protocol.lastForwardedMode === "live"
+                ? "Live handset digit forwarded from Line 1"
+                : "Simulated digit forwarded from Line 1"}
+            >
+              <ArrowRight size={16} />
+              {`${protocol.lastForwardedMode === "live" ? "LIVE" : "SIM"} L1→L2: ${protocol.lastForwarded}`}
+            </div>
+          )}
         </div>
       </div>
 
       <div className="protocol-body">
         <div className="keypad-section">
-          <p className="section-label">DTMF Keypad</p>
-          <p className="key-legend">Last 5 keys highlighted</p>
+          <div className="keypad-head">
+            <p className="section-label">DTMF Keypad</p>
+            <div className="mode-toggle" role="group" aria-label="DTMF send mode">
+              <button
+                className={mode === "simulate" ? "active" : ""}
+                onClick={() => setMode("simulate")}
+                title="Emit a simulated keypress (no call needed)"
+              >Simulate</button>
+              <button
+                className={mode === "live" ? "active" : ""}
+                onClick={() => setMode("live")}
+                title="Send a DTMF digit into the active Asterisk call (needs an active call)"
+              >Live</button>
+            </div>
+          </div>
+          <p className="key-legend">
+            {mode === "simulate"
+              ? "Click a key to simulate transmitting it"
+              : "Default: sends a digit into the active Asterisk call"}
+            {" · last 5 highlighted"}
+          </p>
           <div className="keypad">
             {DTMF_KEYS.map((row, ri) => (
               <div key={ri} className="keypad-row">
                 {row.map((key) => (
-                  <div key={key} className={`keypad-key ${recentDigits.has(key) ? "pressed" : ""}`}>
+                  <button
+                    key={key}
+                    className={`keypad-key ${recentDigits.has(key) ? "pressed" : ""} ${sending === key ? "sending" : ""}`}
+                    onClick={() => pressKey(key)}
+                    disabled={sending !== null}
+                  >
                     {key}
-                  </div>
+                  </button>
                 ))}
               </div>
             ))}
           </div>
+          {lastResult && <p className={`keypad-result ${mode}`}>{lastResult}</p>}
         </div>
 
         <div className="seq-section">
@@ -631,6 +814,16 @@ function EventRow({ event }: { event: CommunicationEvent }) {
   }).format(new Date(event.created_at));
 
   const lineNum = normalizeLineNum(event.line);
+  const sourceLabel = isLiveTelephonyEvent(event)
+    ? "LIVE HANDSET"
+    : isSimulatedEvent(event)
+    ? "SIMULATION"
+    : "SYSTEM";
+  const sourceClass = isLiveTelephonyEvent(event)
+    ? "source-live"
+    : isSimulatedEvent(event)
+    ? "source-sim"
+    : "source-system";
 
   return (
     <article className={`event-row ${event.type === "fxs_hook" ? "ev-fxs" : ""}`}>
@@ -638,6 +831,7 @@ function EventRow({ event }: { event: CommunicationEvent }) {
       <div className="event-main">
         <div className="event-meta">
           <span>{time}</span>
+          <span className={`source-badge ${sourceClass}`}>{sourceLabel}</span>
           <span>{event.source}</span>
           <span className={`type-badge type-${event.type.replace(/_/g, "-")}`}>{event.type}</span>
           {event.digit && <span className="dtmf-badge">DTMF <strong>{event.digit}</strong></span>}

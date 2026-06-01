@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Self-healing en-alias daemon. Runs scripts/ensure_en_alias.sh at load and every
+  30s, so the 192.168.100.2 alias is re-applied to whichever interface holds the
+  HT812 link (192.168.2.2) — surviving reboots, unplug/replug, and interface
+  renames (en7 -> en8 ...). Without it the device (192.168.100.100) and Asterisk
+  drift onto different subnets and both FXS lines unregister.
+
+  Install (update the path if your repo lives elsewhere):
+    sudo cp scripts/ensure_en_alias.sh /usr/local/bin/pbx_ensure_en_alias.sh
+    sudo chmod 755 /usr/local/bin/pbx_ensure_en_alias.sh
+    sudo cp scripts/com.pbx.en7alias.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.pbx.en7alias.plist
+    sudo chmod 644 /Library/LaunchDaemons/com.pbx.en7alias.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.pbx.en7alias.plist
+
+  Verify:   sudo launchctl print system/com.pbx.en7alias | head
+  Logs:     tail -f /tmp/pbx_en_alias.log
+  Remove:   sudo launchctl bootout system /Library/LaunchDaemons/com.pbx.en7alias.plist
+            sudo rm /Library/LaunchDaemons/com.pbx.en7alias.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pbx.en7alias</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/usr/local/bin/pbx_ensure_en_alias.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/pbx_en_alias.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pbx_en_alias.log</string>
+</dict>
+</plist>
