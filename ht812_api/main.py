@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from dtmf_router import router as dtmf_router
 from events import EventStore
 from events_router import router as events_router
 from fxs_poller import FXSPoller
@@ -95,6 +96,7 @@ app = FastAPI(
 
 app.include_router(router)
 app.include_router(events_router)
+app.include_router(dtmf_router)
 
 _CORS_ORIGINS = [
     origin.strip()

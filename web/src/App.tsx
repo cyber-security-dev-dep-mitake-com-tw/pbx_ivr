@@ -480,6 +480,32 @@ function LineDTMFPanel({
   const isOffHook = protocol.hookState === "1" || protocol.hookLabel === "off-hook";
   const hookKnown = protocol.hookLabel !== "unknown";
 
+  const [mode, setMode] = useState<"simulate" | "live">("simulate");
+  const [sending, setSending] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<string | null>(null);
+
+  async function pressKey(digit: string) {
+    setSending(digit);
+    setLastResult(null);
+    try {
+      const ep = mode === "simulate" ? "simulate" : "send";
+      const res = await fetch(
+        `${API_BASE_URL}/dtmf/${ep}?line=${lineNum}&digit=${encodeURIComponent(digit)}`,
+        { method: "POST" },
+      );
+      const body = await res.json();
+      if (body.ok) {
+        setLastResult(mode === "simulate" ? `simulated ${digit}` : `sent ${digit} → live channel`);
+      } else {
+        setLastResult(body.reason || body.error || "no active call");
+      }
+    } catch (err) {
+      setLastResult(err instanceof Error ? err.message : "request failed");
+    } finally {
+      setSending(null);
+    }
+  }
+
   return (
     <div className="panel dtmf-panel">
       <div className="panel-head">
@@ -509,19 +535,44 @@ function LineDTMFPanel({
 
       <div className="protocol-body">
         <div className="keypad-section">
-          <p className="section-label">DTMF Keypad</p>
-          <p className="key-legend">Last 5 keys highlighted</p>
+          <div className="keypad-head">
+            <p className="section-label">DTMF Keypad</p>
+            <div className="mode-toggle" role="group" aria-label="DTMF send mode">
+              <button
+                className={mode === "simulate" ? "active" : ""}
+                onClick={() => setMode("simulate")}
+                title="Emit a simulated keypress (no call needed)"
+              >Simulate</button>
+              <button
+                className={mode === "live" ? "active" : ""}
+                onClick={() => setMode("live")}
+                title="Send a real DTMF digit into the live call (needs an active call)"
+              >Live</button>
+            </div>
+          </div>
+          <p className="key-legend">
+            {mode === "simulate"
+              ? "Click a key to simulate transmitting it"
+              : "Click sends a real digit into the active call"}
+            {" · last 5 highlighted"}
+          </p>
           <div className="keypad">
             {DTMF_KEYS.map((row, ri) => (
               <div key={ri} className="keypad-row">
                 {row.map((key) => (
-                  <div key={key} className={`keypad-key ${recentDigits.has(key) ? "pressed" : ""}`}>
+                  <button
+                    key={key}
+                    className={`keypad-key ${recentDigits.has(key) ? "pressed" : ""} ${sending === key ? "sending" : ""}`}
+                    onClick={() => pressKey(key)}
+                    disabled={sending !== null}
+                  >
                     {key}
-                  </div>
+                  </button>
                 ))}
               </div>
             ))}
           </div>
+          {lastResult && <p className={`keypad-result ${mode}`}>{lastResult}</p>}
         </div>
 
         <div className="seq-section">

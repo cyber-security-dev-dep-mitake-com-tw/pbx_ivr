@@ -589,6 +589,63 @@ dd {
   box-shadow: 0 2px 8px rgba(23, 107, 135, 0.30);
 }
 
+/* Clickable keypad (interactive DTMF) */
+button.keypad-key {
+  cursor: pointer;
+  font-family: inherit;
+}
+button.keypad-key:hover:not(:disabled) {
+  border-color: #176b87;
+  background: #eef6f9;
+}
+button.keypad-key:active:not(:disabled) {
+  transform: translateY(1px);
+}
+button.keypad-key:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+button.keypad-key.sending {
+  background: #f0b429;
+  border-color: #f0b429;
+  color: #1c1c1c;
+}
+
+.keypad-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid #d8e0e5;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mode-toggle button {
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: none;
+  background: #f8fafb;
+  color: #6b7c88;
+  cursor: pointer;
+}
+.mode-toggle button.active {
+  background: #176b87;
+  color: #fff;
+}
+.keypad-result {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #4a5b66;
+}
+.keypad-result.live {
+  color: #176b87;
+}
+
 /* Sequence and FXS blocks */
 
 .seq-section {

@@ -440,6 +440,160 @@ physically unreachable (ARP `(incomplete)`), it is physical-layer:
 
 ---
 
+## 7A. Deep Dive — Why It Could NOT Register Before, and Why It Can Now
+
+This is the single most important section. Read it if nothing else.
+
+### 7A.1 The mental model: what an FXS line actually needs to register
+
+A SIP REGISTER is just a UDP/TCP packet. For FXS line 1 (ext 1001) to register, **all**
+of these must be true, in order:
+
+```
+[1] Account configured   →  user id, auth id, password, server, transport   (P-values / Profile)
+[2] Account ENABLED      →  Profile Active = Yes  AND  port account active   (P31/P731 + Profile)
+[3] SIP UA has an IP     →  the interface the SIP stack binds to has an address
+[4] That IP can REACH    →  the server IP is on a reachable subnet/route from [3]
+[5] Server answers       →  Asterisk receives it, auth matches, returns 200 OK
+```
+
+Two days of effort lived entirely in **[1] and [2]** — P-values, profile system, write-only
+passwords, transport, `Profile Active`. Those were necessary but they were never the blocker.
+**The blocker was [3]→[4]: the SIP user-agent's interface was on a different subnet than
+Asterisk, so the packet had nowhere to go.** When [4] fails, the device emits **zero**
+packets — which looks identical to a config problem, which is why it hid for so long.
+
+### 7A.2 Why it could NOT register (the real cause)
+
+The HT812 has **two Ethernet ports**, WAN (NET1) and LAN (NET2), with consecutive MACs
+(`…60:2a` and `…60:2b`). The **FXS SIP user-agent registers out the WAN interface.** In this
+bench setup:
+
+- The device's **WAN interface was on `192.168.100.100`** (its own default subnet — confirmed
+  by the device voice menu: lift FXS1 handset → `***` → `02` → it *speaks* `192.168.100.100`).
+- **Asterisk/the Mac were on `192.168.2.2`** (a different /24).
+
+So step [4] was impossible:
+
+```
+  HT812 SIP UA                              Asterisk
+  src 192.168.100.100  ──✗ no route ──✗──▶  192.168.2.2:5060
+  (192.168.100.0/24)        different        (192.168.2.0/24)
+                             subnets, no
+                             gateway between
+```
+
+The device tried to register, had no route to `192.168.2.2`, and dropped the packet before it
+ever hit the wire. That is exactly what we observed:
+
+- `sudo tcpdump -i en7 -n port 5060` → **0 packets captured** across a full reboot.
+- Device SIP log (`api-get_sip`) → `{"results":[]}` / `exist:false` (nothing sent).
+- Asterisk `pjsip show contacts` → `No objects found`.
+
+**The red herrings that masked it (and why each looked plausible):**
+
+| Red herring | Why it looked like the cause | Why it wasn't |
+|-------------|------------------------------|----------------|
+| TLS vs TCP transport | Last force-register used TLS:5061; TLS needs cert trust | Even on TCP, 0 packets — transport is [1], not [4] |
+| Write-only SIP passwords | Can't verify P34/P4120 readback | Password is [5] (auth); we never reached [5] |
+| Wrong profile system (P47 vs P4669) | Two parallel config systems | Both irrelevant if the packet never leaves |
+| `Profile Active` unchecked | Genuinely was unchecked at one point — fixed it | After fixing, *still* 0 packets — it was [2], not [4] |
+| Device mode P8 (bridge/router) | Affects interface behavior | Neither mode helps if WAN subnet ≠ server subnet |
+| `host.docker.internal` in P47 | Once written an unresolvable host | A real past bug, but corrected long before |
+
+Every one of these was a real, fixable issue **inside steps [1]/[2]** — so fixing them felt
+like progress — but none of them could make a packet cross between two unconnected subnets.
+
+### 7A.3 The diagnostic chain that finally cracked it
+
+The breakthrough was refusing to trust device/Asterisk *state* and instead measuring the
+**wire**:
+
+1. **`tcpdump` on the Mac's direct-eth interface** (`en7`) showed **0 SIP packets** even across a
+   reboot with config correct and Profile 2 active. That eliminated Asterisk, Docker, auth, and
+   config in one move: the device is transmitting nothing.
+2. **The device voice menu** (`***` → `02`) spoke its real IP: **`192.168.100.100`** — a subnet
+   the Mac/Asterisk were never on. That is the whole bug in one number.
+
+> Rule of thumb: **a fully-configured SIP endpoint that sends zero packets is a layer-3 problem,
+> not a SIP problem.** Stop tuning SIP fields; verify the SIP interface's IP/subnet vs the server.
+
+### 7A.4 Why it registers NOW
+
+We stopped forcing the device onto `192.168.2.x` (it kept reverting) and instead **moved
+Asterisk onto the device's subnet** — one alias plus a couple of edits:
+
+1. **Alias the Mac/Asterisk onto `192.168.100.x`:**
+   `sudo ifconfig en7 alias 192.168.100.2 255.255.255.0`
+   Now `en7` holds **both** `192.168.2.2` and `192.168.100.2`; the Mac is on the device's wire.
+2. **Point SIP at it:** device UI (now `https://192.168.100.100`) → Profile 2 →
+   **Profile Active ✓**, **Primary SIP Server = `192.168.100.2`**, P8=1.
+3. **Match our stack:** `.env` `ASTERISK_SIP_HOST=192.168.100.2`; fix `ht812_proxy.py`
+   `TARGET_HOST="192.168.100.100"` (it had a typo `92.168.100.100`); restart proxy + `ht812_api`.
+
+Now every step [1]→[5] is satisfied and the packet path is unbroken:
+
+```
+  HT812 SIP UA (WAN 192.168.100.100)
+        │ REGISTER 1001/1002, transport=TCP
+        ▼
+  192.168.100.2:5060  (Mac en7 alias)
+        │ Docker Desktop publishes 0.0.0.0:5060 → asterisk container
+        │ (source NATs to the Docker gateway 192.168.65.1)
+        ▼
+  asterisk PJSIP  → auth (Mitake123) → 200 OK → contact stored
+        │ rewrite_contact=yes rewrites the 192.168.65.1 contact so replies route back
+        ▼
+  pjsip show contacts → 1001/1002 Avail    ✅
+```
+
+**Verified result:** `pjsip show contacts` lists `1001`/`1002` **Avail**; audit verdict
+`registered_confirmed_both_sides`; device `P4921/P4922 = Registered`. The contact URIs show
+source `192.168.65.1` — that is Docker Desktop's gateway NAT, and `rewrite_contact=yes`
+(already in `pjsip.conf`) makes Asterisk reply to the real source, so it works.
+
+### 7A.5 The one fragile dependency — make the alias permanent
+
+The `ifconfig … alias` is **not persistent**; it is lost on every Mac reboot, and when it
+vanishes the device (`192.168.100.100`) and Asterisk are again on different subnets → **both
+lines silently unregister.** This is the single most likely future regression. Persist it:
+
+```bash
+sudo cp scripts/com.pbx.en7alias.plist /Library/LaunchDaemons/
+sudo launchctl load -w /Library/LaunchDaemons/com.pbx.en7alias.plist
+# verify: ifconfig en7 | grep 192.168.100.2
+```
+
+(If the USB LAN adapter ever enumerates as something other than `en7`, edit the interface name
+in the plist.)
+
+---
+
+## 7B. Interactive DTMF on the Protocol Page (Simulate & Live)
+
+The Protocol page keypad is **clickable** and transmits key codes two ways. Backend:
+`ht812_api/dtmf_router.py` (`/dtmf/*`), Asterisk side: `asterisk_client.py`. Both feed the
+existing EventStore → `/events/stream` SSE pipeline, so presses show up live on the Protocol
+and Timeline panels.
+
+| Mode (toggle on each panel) | Endpoint | What it does | Needs a live call? |
+|------|----------|--------------|--------------------|
+| **Simulate** | `POST /dtmf/simulate?line=&digit=` | Emits a simulated `dtmf` event; for line 1 also emits the paired Line 1→Line 2 forward, so propagation is visible with no call. Fully offline. | No |
+| **Live** | `POST /dtmf/send?line=&digit=` | Looks up the active Asterisk channel for that line (ARI `GET /channels`) and injects a real digit (ARI `POST /channels/{id}/dtmf`). | Yes — fails gracefully with a hint if none |
+
+- **Simulate** is for demoing/visualising the flow (including L1→L2) without picking up a phone.
+- **Live** drives a real in-progress call. With no active call it returns
+  `{"ok":false,"reason":"no active channel…","hint":"Pick up the handset and dial * into the IVR first."}`
+  and posts an `error` event so the UI shows why.
+
+CLI equivalents:
+```bash
+curl -X POST 'http://localhost:8000/dtmf/simulate?line=1&digit=5'   # 3 events: L1 dtmf + route + L2 forwarded
+curl -X POST 'http://localhost:8000/dtmf/send?line=1&digit=5'        # real inject (needs active call)
+```
+
+---
+
 ## 8. Bug Fixes Applied to the Code
 
 | Area | Bug | Fix |
