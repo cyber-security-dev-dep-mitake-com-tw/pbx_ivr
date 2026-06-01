@@ -79,6 +79,41 @@ h3 {
   white-space: nowrap;
 }
 
+.live-evidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 14px;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #166534;
+  font-weight: 800;
+  white-space: normal;
+}
+
+.live-evidence-badge svg {
+  flex: 0 0 auto;
+}
+
+.live-evidence-copy {
+  display: grid;
+  gap: 2px;
+  line-height: 1.15;
+}
+
+.live-evidence-copy span {
+  font-size: 0.75rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.live-evidence-copy strong {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
 .ok {
   color: #16764c;
 }
