@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity, Archive, ArrowRight, Cable, CheckCircle2, ClipboardList,
-  DatabaseBackup, Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
-  RotateCcw, Server, Settings2, TriangleAlert, Zap,
+  Activity, ArrowRight, Cable, CheckCircle2, ClipboardList,
+  Hash, Phone, PhoneCall, PhoneOff, Radio, RefreshCw,
+  Server, Settings2, TriangleAlert, Zap,
 } from "lucide-react";
 import { createRoot } from "react-dom/client";
+// Ignore missing type declarations for CSS side-effect import
+// @ts-ignore
 import "./styles.css";
+
+// Provide ImportMeta typing for Vite env to satisfy TypeScript
+declare global {
+  interface ImportMetaEnv {
+    readonly VITE_API_BASE_URL?: string;
+  }
+
+  interface ImportMeta {
+    readonly env: ImportMetaEnv;
+  }
+}
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -19,85 +32,16 @@ type PortStatus = {
 };
 
 type Summary = {
-  offline?: boolean;
-  error?: {
-    message?: string;
-    offline?: boolean;
-  };
   expected: {
     transport: string;
     sip_port: string;
     extensions: string[];
-    write_only_password_fields?: string[];
-    manual_password_fields?: string[];
-    password_env_available?: Record<string, boolean>;
+    manual_password_fields: string[];
   };
   ports: {
     port1: PortStatus;
     port2: PortStatus;
     raw: Record<string, string>;
-  };
-  audit?: RegistrationAudit;
-  diagnostics?: Record<string, unknown>;
-};
-
-type SipLogResponse = {
-  sip_log_raw: string;
-  sip_log_empty: boolean;
-  offline?: boolean;
-  error?: {
-    message?: string;
-    offline?: boolean;
-  };
-  diagnostics?: {
-    debug_log_path?: string;
-  };
-  audit?: RegistrationAudit;
-};
-
-type RegistrationAudit = {
-  verdict?: string;
-  requested?: {
-    transport?: string;
-    sip_server?: string;
-    sip_port?: string;
-  };
-  device?: {
-    registered?: boolean;
-    fxs1_registration_raw?: string | null;
-    fxs2_registration_raw?: string | null;
-    sip_trace_state?: string;
-    snapshot_source?: string;
-  };
-  force_register?: {
-    found?: boolean;
-    applied?: boolean;
-    transport?: string | null;
-    transport_code?: string | null;
-    sip_server?: string | null;
-    sip_port?: string | null;
-    password_fields_attempted?: string[];
-    debug_log_path?: string | null;
-  };
-  sip_log?: {
-    found?: boolean;
-    offline?: boolean;
-    empty?: boolean | null;
-    debug_log_path?: string | null;
-  };
-  latest_backup?: {
-    filename?: string;
-    path?: string;
-    size_bytes?: number;
-    created_at?: string;
-  } | null;
-  comparison?: {
-    summary?: {
-      mismatch_count?: number;
-      has_live_values?: boolean;
-      has_latest_backup_values?: boolean;
-    };
-    mismatches?: Array<Record<string, unknown>>;
   };
 };
 
@@ -112,39 +56,6 @@ type CommunicationEvent = {
   line?: string | null;
   digit?: string | null;
   data: Record<string, unknown>;
-};
-
-type BackupFile = {
-  filename: string;
-  size_bytes: number;
-  created_at: string;
-  path: string;
-};
-
-type ForceRegisterResponse = {
-  success: boolean;
-  message: string;
-  sip_server: string;
-  sip_port: string;
-  transport: string;
-  params_written: Record<string, string>;
-  readback: Record<string, string>;
-  diagnostics?: {
-    debug_log_path?: string;
-    action?: {
-      password_fields_attempted?: string[];
-    };
-    comparison?: {
-      summary?: {
-        mismatch_count?: number;
-      };
-    };
-  };
-};
-
-type BackupListResponse = {
-  count: number;
-  backups: BackupFile[];
 };
 
 type Tab = "setup" | "protocol" | "timeline";
@@ -168,32 +79,13 @@ function App() {
   const [tab, setTab] = useState<Tab>("setup");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [events, setEvents] = useState<CommunicationEvent[]>([]);
-  const [backups, setBackups] = useState<BackupFile[]>([]);
   const [loading, setLoading] = useState(false);
-  const [backupLoading, setBackupLoading] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
-  const [snapshotSaving, setSnapshotSaving] = useState(false);
-  const [forceRegistering, setForceRegistering] = useState(false);
-  const [registerDebug, setRegisterDebug] = useState<ForceRegisterResponse | null>(null);
-  const [sipLog, setSipLog] = useState<SipLogResponse | null>(null);
-  const [audit, setAudit] = useState<RegistrationAudit | null>(null);
-  const [sipLogLoading, setSipLogLoading] = useState(false);
-  const [regTransport, setRegTransport] = useState<"udp" | "tcp" | "tls">("udp");
-  const [sipServer, setSipServer] = useState("192.168.2.2");
   const [error, setError] = useState<string | null>(null);
-  const [backupMessage, setBackupMessage] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
   const [lineFilter, setLineFilter] = useState<LineFilter>("all");
 
   const allRegistered = Boolean(summary?.ports.port1.registered && summary?.ports.port2.registered);
-  const selectedSipPort = regTransport === "tls" ? "5061" : "5060";
-  const liveTransport = summary?.ports.raw?.P130 === "0"
-    ? "UDP"
-    : summary?.ports.raw?.P130 === "1"
-    ? "TCP"
-    : summary?.ports.raw?.P130 === "2"
-    ? "TLS"
-    : "Unknown";
 
   async function loadSummary() {
     setLoading(true);
@@ -201,145 +93,36 @@ function App() {
     try {
       const res = await fetch(`${API_BASE_URL}/ht812/status/summary`);
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      console.log("[PBX] summary loaded:", data);
-      setSummary(data);
+      setSummary(await res.json());
     } catch (err) {
-      console.error("[PBX] summary error:", err);
       setError(err instanceof Error ? err.message : "Failed to load status");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadBackups() {
-    setBackupLoading(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/ht812/backups`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as BackupListResponse;
-      setBackups(data.backups);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load snapshots");
-    } finally {
-      setBackupLoading(false);
-    }
-  }
-
-  async function loadSipLog() {
-    setSipLogLoading(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/ht812/status/sip-log`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as SipLogResponse;
-      setSipLog(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load SIP trace");
-    } finally {
-      setSipLogLoading(false);
-    }
-  }
-
-  async function loadAudit() {
-    try {
-      const params = new URLSearchParams({
-        transport: regTransport,
-        sip_server: sipServer.trim(),
-        sip_port: selectedSipPort,
-        live: "false",
-      });
-      const res = await fetch(`${API_BASE_URL}/ht812/status/audit?${params.toString()}`);
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { audit?: RegistrationAudit };
-      setAudit(data.audit ?? null);
-    } catch (err) {
-      console.error("[PBX] audit error:", err);
-    }
-  }
-
-  async function createSnapshotBackup() {
-    setSnapshotSaving(true);
-    setBackupMessage(null);
-    setError(null);
-    try {
-      const res = await fetch(`${API_BASE_URL}/ht812/snapshot-backup`, { method: "POST" });
-      if (!res.ok) throw new Error(await res.text());
-      const saved = await res.json() as BackupFile;
-      setBackupMessage(`Saved ${saved.filename}`);
-      await loadBackups();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save snapshot");
-    } finally {
-      setSnapshotSaving(false);
-    }
-  }
+  // load backup
+  async function loadBackup(){}
 
   async function provisionTwoLine() {
     setProvisioning(true);
     setError(null);
     try {
-      console.log("[PBX] provision: calling /ht812/provision/two-line");
       const res = await fetch(`${API_BASE_URL}/ht812/provision/two-line`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transport: "tcp", sip_port: "5060" }),
       });
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json();
-      console.log("[PBX] provision response:", data);
       await loadSummary();
     } catch (err) {
-      console.error("[PBX] provision error:", err);
       setError(err instanceof Error ? err.message : "Failed to provision HT812");
     } finally {
       setProvisioning(false);
     }
   }
 
-  async function forceRegister() {
-    setForceRegistering(true);
-    setRegisterDebug(null);
-    setError(null);
-    try {
-      console.log(`[PBX] force-register: transport=${regTransport}`);
-      const params = new URLSearchParams({
-        transport: regTransport,
-        sip_server: sipServer.trim(),
-        sip_port: selectedSipPort,
-        write_passwords: "true",
-      });
-      const res = await fetch(
-        `${API_BASE_URL}/ht812/force-register?${params.toString()}`,
-        { method: "POST" },
-      );
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as ForceRegisterResponse;
-      console.log("[PBX] force-register response:", data);
-      console.table(data.readback);
-      console.log("[PBX] P4921 (FXS1 reg):", data.readback["P4921"]);
-      console.log("[PBX] P4922 (FXS2 reg):", data.readback["P4922"]);
-      console.log("[PBX] P47  (FXS1 server):", data.readback["P47"]);
-      console.log("[PBX] P35  (FXS1 user):", data.readback["P35"]);
-      console.log("[PBX] P4060 (profile user):", data.readback["P4060"]);
-      console.log("[PBX] P4669 (profile server):", data.readback["P4669"]);
-      console.log("[PBX] P8   (device mode):", data.readback["P8"]);
-      setRegisterDebug(data);
-      await loadSummary();
-      await loadAudit();
-    } catch (err) {
-      console.error("[PBX] force-register error:", err);
-      setError(err instanceof Error ? err.message : "Force register failed");
-    } finally {
-      setForceRegistering(false);
-    }
-  }
-
-  useEffect(() => {
-    loadSummary();
-    loadBackups();
-    loadSipLog();
-    loadAudit();
-  }, []);
+  useEffect(() => { loadSummary(); }, []);
 
   useEffect(() => {
     const source = new EventSource(`${API_BASE_URL}/events/stream`);
@@ -347,7 +130,6 @@ function App() {
     source.onerror = () => setStreamState("closed");
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as CommunicationEvent;
-      console.log(`[PBX] event: ${event.type} | ${event.source} | ${event.message}`, event);
       setEvents((current) => {
         const next = [...current.filter((item) => item.id !== event.id), event];
         return next.slice(-120);
@@ -430,156 +212,33 @@ function App() {
             <div className="panel-head">
               <div>
                 <h2>Line Registration</h2>
-                <p>FXS 1 and FXS 2 register to Asterisk over the selected SIP transport.</p>
+                <p>FXS 1 and FXS 2 register to Asterisk over SIP/TCP.</p>
               </div>
               <button className="icon-button" onClick={loadSummary} disabled={loading} title="Refresh status">
                 <RefreshCw size={18} className={loading ? "spin" : ""} />
               </button>
             </div>
-            {summary?.offline && (
-              <p className="snapshot-message">Live HT812 status is offline. Showing last known values from backups.</p>
-            )}
-            {summary?.error?.message && (
-              <p className="snapshot-message">{summary.error.message}</p>
-            )}
-            {audit?.verdict && (
-              <div className={`audit-banner ${audit.verdict === "registered" ? "ok" : "warn"}`}>
-                {audit.verdict === "registered" ? <CheckCircle2 size={18} /> : <TriangleAlert size={18} />}
-                <span>{audit.verdict.replace(/_/g, " ")}</span>
-              </div>
-            )}
             <div className="line-grid">
               <LinePanel port={summary?.ports.port1} label="FXS Port 1" expected="1001" />
               <LinePanel port={summary?.ports.port2} label="FXS Port 2" expected="1002" />
             </div>
           </div>
 
-          <div className="side-stack">
-            <div className="panel side">
-              <h2>Provisioning</h2>
-              <dl className="kv">
-                <div><dt>Live transport</dt><dd>{liveTransport}</dd></div>
-                <div><dt>Live server</dt><dd>{summary?.ports.port1.sip_server || "—"}</dd></div>
-                <div><dt>Live port</dt><dd>{summary?.ports.port1.sip_port || "—"}</dd></div>
-                <div><dt>Force target</dt><dd>{sipServer.trim() || "—"}:{selectedSipPort}</dd></div>
-                <div><dt>Passwords</dt><dd>{summary?.expected.password_env_available?.SIP_1001_PASS && summary?.expected.password_env_available?.SIP_1002_PASS ? "env ready" : "check env"}</dd></div>
-                <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
-              </dl>
-              <dl className="kv compact audit-kv">
-                <div><dt>Audit</dt><dd>{audit?.verdict ? audit.verdict.replace(/_/g, " ") : "—"}</dd></div>
-                <div><dt>Force write</dt><dd>{audit?.force_register?.applied ? "acknowledged" : "not observed"}</dd></div>
-                <div><dt>SIP trace</dt><dd>{audit?.sip_log?.offline ? "offline" : audit?.sip_log?.empty ? "empty" : "present"}</dd></div>
-                <div><dt>Registered</dt><dd>{audit?.device?.registered ? "yes" : "no"}</dd></div>
-                <div><dt>Mismatch</dt><dd>{typeof audit?.comparison?.summary?.mismatch_count === "number" ? audit.comparison.summary.mismatch_count : "—"}</dd></div>
-              </dl>
-              <label className="field-label" htmlFor="sip-server">
-                Asterisk SIP server
-                <input
-                  id="sip-server"
-                  value={sipServer}
-                  onChange={(event) => setSipServer(event.target.value)}
-                  placeholder="192.168.2.2"
-                />
-              </label>
-              <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
-                <Cable size={18} />
-                {provisioning ? "Applying..." : "Apply two-line settings"}
-              </button>
-              <div className="transport-picker">
-                <span>Force transport:</span>
-                {(["udp", "tcp", "tls"] as const).map((t) => (
-                  <button
-                    key={t}
-                    className={`filter-btn ${regTransport === t ? "active" : ""}`}
-                    onClick={() => setRegTransport(t)}
-                  >
-                    {t.toUpperCase()}
-                  </button>
-                ))}
-              </div>
-              <button className="primary force-reg-btn" onClick={forceRegister} disabled={forceRegistering}>
-                <RotateCcw size={18} />
-                {forceRegistering ? "Forcing..." : `Force Register (${regTransport.toUpperCase()})`}
-              </button>
-              <p className="note">
-                Force-register blind-writes write-only auth fields P34/P734/P4120/P4121 from API env vars; the HT812 cannot read them back.
-              </p>
-              {registerDebug && (
-                <div className="debug-panel">
-                  <p className="debug-title">Last force-register readback</p>
-                  <p className="debug-message">{registerDebug.message}</p>
-                  {registerDebug.diagnostics?.action?.password_fields_attempted?.length ? (
-                    <div className="debug-log-path">
-                      Password fields attempted: {registerDebug.diagnostics.action.password_fields_attempted.join(", ")}
-                    </div>
-                  ) : null}
-                {registerDebug.diagnostics?.debug_log_path && (
-                    <div className="debug-log-path">
-                      {registerDebug.diagnostics.debug_log_path}
-                    </div>
-                  )}
-                  <table className="debug-table">
-                    <tbody>
-                      {Object.entries(registerDebug.readback)
-                        .filter(([, v]) => v !== undefined)
-                        .map(([k, v]) => (
-                          <tr key={k} className={k.startsWith("P492") ? "debug-reg-row" : ""}>
-                            <td className="debug-key">{k}</td>
-                            <td className="debug-val">{v || <em>empty</em>}</td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
-            <div className="panel side">
-              <div className="panel-head compact-head">
-                <div>
-                  <h2>Snapshots</h2>
-                  <p>{backups.length} saved XML backups</p>
-                </div>
-                <button className="icon-button" onClick={loadBackups} disabled={backupLoading} title="Refresh snapshots">
-                  <RefreshCw size={18} className={backupLoading ? "spin" : ""} />
-                </button>
-              </div>
-              <button className="primary" onClick={createSnapshotBackup} disabled={snapshotSaving}>
-                <DatabaseBackup size={18} />
-                {snapshotSaving ? "Saving..." : "Save snapshot"}
-              </button>
-              {backupMessage && <p className="snapshot-message">{backupMessage}</p>}
-              <div className="snapshot-list">
-                {backups.length === 0 ? (
-                  <div className="snapshot-empty">
-                    <Archive size={17} />
-                    No snapshots found
-                  </div>
-                ) : (
-                  backups.slice(0, 8).map((backup) => <SnapshotRow key={backup.filename} backup={backup} />)
-                )}
-              </div>
-            </div>
-
-            <div className="panel side">
-              <div className="panel-head compact-head">
-                <div>
-                  <h2>SIP Trace</h2>
-                  <p>
-                    {sipLog?.offline ? "offline" : sipLog?.sip_log_empty ? "empty" : "live"}
-                  </p>
-                </div>
-                <button className="icon-button" onClick={loadSipLog} disabled={sipLogLoading} title="Refresh SIP trace">
-                  <RefreshCw size={18} className={sipLogLoading ? "spin" : ""} />
-                </button>
-              </div>
-              <dl className="kv compact">
-                <div><dt>Trace state</dt><dd>{sipLog?.offline ? "offline" : sipLog?.sip_log_empty ? "empty" : "present"}</dd></div>
-                <div><dt>Log path</dt><dd>{sipLog?.diagnostics?.debug_log_path || "—"}</dd></div>
-              </dl>
-              {sipLog?.error?.message && <p className="snapshot-message">{sipLog.error.message}</p>}
-              <pre className="sip-trace">{sipLog?.sip_log_raw || "No SIP trace captured."}</pre>
-            </div>
+          <div className="panel side">
+            <h2>Provisioning</h2>
+            <dl className="kv">
+              <div><dt>SIP transport</dt><dd>TCP</dd></div>
+              <div><dt>SIP port</dt><dd>5060</dd></div>
+              <div><dt>Password fields</dt><dd>P34, P734</dd></div>
+              <div><dt>API</dt><dd>{API_BASE_URL}</dd></div>
+            </dl>
+            <button className="primary" onClick={provisionTwoLine} disabled={provisioning}>
+              <Cable size={18} />
+              {provisioning ? "Applying..." : "Apply two-line settings"}
+            </button>
+            <p className="note">
+              SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
+            </p>
           </div>
         </section>
       )}
@@ -625,31 +284,6 @@ function App() {
         </section>
       )}
     </main>
-  );
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function SnapshotRow({ backup }: { backup: BackupFile }) {
-  const created = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(backup.created_at));
-
-  return (
-    <article className="snapshot-row" title={backup.path}>
-      <Archive size={17} />
-      <div>
-        <strong>{backup.filename}</strong>
-        <span>{created} · {formatBytes(backup.size_bytes)}</span>
-      </div>
-    </article>
   );
 }
 
