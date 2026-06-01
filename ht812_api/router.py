@@ -505,7 +505,10 @@ def _sip_log_is_empty(text: Any) -> bool:
     stripped = text.strip()
     if not stripped:
         return True
-    return '"exist":"false"' in stripped.replace(" ", "")
+    compact = stripped.replace(" ", "")
+    # `{"exist":"false"}` = no trace held; `{"results":[]}` = trace enabled but the
+    # device has logged zero SIP entries. Both mean the device sent no SIP.
+    return '"exist":"false"' in compact or '"results":[]' in compact
 
 
 async def _capture_sip_log(request: Request, *, source: str) -> dict[str, Any]:
