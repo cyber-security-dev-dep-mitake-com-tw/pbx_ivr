@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Transparent TCP proxy: host:18443 → 192.168.2.1:443 (HT812 HTTPS)
+Transparent TCP proxy: host:18443 → 192.168.100.100:443 (HT812 HTTPS)
 
 Allows Docker containers to reach the HT812 on the direct-LAN
 192.168.2.x subnet, which is only accessible from the Mac host.
 
-  Docker container  →  host.docker.internal:18443  →  192.168.2.1:443
+  Docker container  →  host.docker.internal:18443  →  192.168.100.100:443
 
 Usage:
   python scripts/ht812_proxy.py          # foreground
@@ -25,7 +25,7 @@ import sys
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 18443
-TARGET_HOST = "192.168.2.1"
+TARGET_HOST = "192.168.100.100"
 TARGET_PORT = 443
 BUF = 65536
 
