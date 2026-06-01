@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, HTTPException, Query, Request # pyright: ignore[reportMissingImports]
+from fastapi.responses import Response # pyright: ignore[reportMissingImports]
 
-import structlog
+import structlog # pyright: ignore[reportMissingImports]
 from asterisk_client import get_registration_contacts
 from events import CommunicationEventIn
 from ht812_client import HT812AuthError, HT812Client, HT812Error

@@ -190,7 +190,7 @@ function App() {
     }
   }
 
-  useEffect(() => { loadSummary(); }, []);
+  useEffect(() => { loadSummary(); loadAudit(); }, []);
 
   useEffect(() => {
     const source = new EventSource(`${API_BASE_URL}/events/stream`);
@@ -308,6 +308,14 @@ function App() {
               SIP auth passwords must still be entered in the HT812 web UI for both FXS ports.
             </p>
           </div>
+
+          <AuditPanel
+            audit={audit}
+            loading={auditLoading}
+            forcing={forcing}
+            onRefresh={loadAudit}
+            onForce={forceRegister}
+          />
         </section>
       )}
 
@@ -352,6 +360,76 @@ function App() {
         </section>
       )}
     </main>
+  );
+}
+
+const VERDICT_TONE: Record<string, "ok" | "warn" | "bad"> = {
+  registered_confirmed_both_sides: "ok",
+  registered: "ok",
+  asterisk_online_but_device_flag_stale: "warn",
+  device_says_registered_but_asterisk_has_no_contact: "bad",
+  sip_trace_present_but_not_registered: "bad",
+  configured_but_neither_side_registered: "bad",
+  neither_side_registered: "bad",
+  configured_but_no_register_observed: "warn",
+  configured: "warn",
+  no_force_register_audit_found: "warn",
+};
+
+function AuditPanel({
+  audit, loading, forcing, onRefresh, onForce,
+}: {
+  audit: AuditResponse | null;
+  loading: boolean;
+  forcing: boolean;
+  onRefresh: () => void;
+  onForce: () => void;
+}) {
+  const a = audit?.audit;
+  const verdict = a?.verdict ?? "unknown";
+  const tone = VERDICT_TONE[verdict] ?? "warn";
+  const ast = a?.asterisk;
+  const sipRaw = a?.sip_log?.raw?.trim();
+
+  return (
+    <div className="panel side">
+      <div className="panel-head">
+        <div>
+          <h2>Registration Audit</h2>
+          <p>Three-way: device flag · Asterisk contact · written config.</p>
+        </div>
+        <button className="icon-button" onClick={onRefresh} disabled={loading} title="Re-run audit">
+          <RefreshCw size={18} className={loading ? "spin" : ""} />
+        </button>
+      </div>
+
+      <div className={`reg ${tone === "ok" ? "ok" : "warn"}`} style={{ marginBottom: 10 }}>
+        {verdict.replace(/_/g, " ")}
+      </div>
+
+      <dl className="kv compact">
+        <div><dt>Snapshot</dt><dd>{audit?.snapshot_source ?? "-"}{audit?.offline ? " (device offline)" : ""}</dd></div>
+        <div><dt>Device flags</dt><dd>FXS1={a?.device?.fxs1_registration_raw ?? "?"} · FXS2={a?.device?.fxs2_registration_raw ?? "?"}</dd></div>
+        <div><dt>Asterisk</dt><dd>{ast ? (ast.reachable ? (ast.both_registered ? "both online" : "not both online") : "unreachable") : "-"}</dd></div>
+        {ast?.endpoints && Object.entries(ast.endpoints).map(([ext, ep]) => (
+          <div key={ext}><dt>PJSIP/{ext}</dt><dd>{ep.state} ({ep.channel_count} ch)</dd></div>
+        ))}
+        {ast?.error && <div><dt>ARI error</dt><dd>{ast.error}</dd></div>}
+        <div><dt>SIP trace</dt><dd>{a?.device?.sip_trace_state ?? "-"}</dd></div>
+      </dl>
+
+      {sipRaw && (
+        <details style={{ marginTop: 8 }}>
+          <summary className="section-label">Device SIP trace</summary>
+          <pre className="sip-trace">{sipRaw.slice(-4000)}</pre>
+        </details>
+      )}
+
+      <button className="primary" onClick={onForce} disabled={forcing} style={{ marginTop: 12 }}>
+        <Zap size={18} />
+        {forcing ? "Force-registering (TCP)…" : "Force-register over TCP"}
+      </button>
+    </div>
   );
 }
 
