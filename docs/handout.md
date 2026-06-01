@@ -390,7 +390,38 @@ The lines would not register. Each hypothesis tested and the result:
 13. **Password mismatch ruled out** — device UI confirms `Mitake123` on both ports,
     matching `pjsip.conf`. Not the blocker.
 
-### Current open item
+### ✅ RESOLVED — the real root cause: SIP egresses a different subnet
+
+After everything above, a packet capture (`sudo tcpdump -i en7 port 5060`) caught **0
+SIP packets** across a reboot even with config correct and Profile 2 active. The device's
+own voice menu (lift FXS1 handset → `***` → `02`) spoke its IP: **`192.168.100.100`**.
+
+That was the whole two-day bug: the HT812 sends SIP out its **WAN interface, which sits on
+`192.168.100.x`** — a different subnet from Asterisk at `192.168.2.2`. Every REGISTER had
+nowhere to go. All the P-value/profile/password work was correct but irrelevant while the
+SIP-bearing interface and Asterisk were on different networks.
+
+**The fix that worked (conform to the device's subnet instead of fighting it):**
+
+1. Alias the Mac/Asterisk onto the device's subnet:
+   `sudo ifconfig en7 alias 192.168.100.2 255.255.255.0`
+   (persist it with `scripts/com.pbx.en7alias.plist` — the alias is lost on reboot and
+   registration breaks without it).
+2. Device UI (now at `https://192.168.100.100`) → Profile 2 → **Profile Active** checked,
+   **Primary SIP Server = `192.168.100.2`**, P8=1 (router mode).
+3. `.env`: `ASTERISK_SIP_HOST=192.168.100.2`. `scripts/ht812_proxy.py`:
+   `TARGET_HOST = "192.168.100.100"` (it had a typo `92.168.100.100`).
+4. Restart proxy + `ht812_api`.
+
+Result: `pjsip show contacts` → 1001/1002 **Avail**; audit verdict
+`registered_confirmed_both_sides`. Contacts show source `192.168.65.1` (Docker Desktop
+gateway NAT) — handled by `rewrite_contact=yes`.
+
+> **Lesson:** when a fully-configured SIP endpoint sends **zero** packets, stop tuning SIP
+> fields and verify the device's SIP interface is on the **same subnet** as the server.
+> The device voice menu (`***` → `02`) is the fastest ground-truth for its real IP.
+
+### Note — device tunnel offline behavior
 
 The HT812 device tunnel (`host.docker.internal:18443`) is **frequently down** in
 direct-LAN mode — when it is, live device calls fail with `Cannot reach HT812 …`.

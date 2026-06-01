@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Persists the en7 alias 192.168.100.2 across reboots so the HT812 (WAN
+  192.168.100.100) and Asterisk stay on the same subnet. Without this the
+  alias is lost on reboot and both FXS ports stop registering.
+
+  Install:
+    sudo cp scripts/com.pbx.en7alias.plist /Library/LaunchDaemons/
+    sudo launchctl load -w /Library/LaunchDaemons/com.pbx.en7alias.plist
+  Remove:
+    sudo launchctl unload -w /Library/LaunchDaemons/com.pbx.en7alias.plist
+    sudo rm /Library/LaunchDaemons/com.pbx.en7alias.plist
+
+  If the USB LAN adapter ever enumerates as something other than en7, update
+  the interface name below.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pbx.en7alias</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/sbin/ifconfig</string>
+        <string>en7</string>
+        <string>alias</string>
+        <string>192.168.100.2</string>
+        <string>255.255.255.0</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
