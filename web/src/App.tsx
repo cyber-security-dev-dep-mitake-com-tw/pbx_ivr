@@ -113,6 +113,38 @@ function normalizeLineNum(line: string | null | undefined): "1" | "2" | null {
   return null;
 }
 
+function isSimulatedEvent(ev: CommunicationEvent): boolean {
+  return ev.source === "web_sim" || ev.data.simulated === true;
+}
+
+function isLiveTelephonyEvent(ev: CommunicationEvent): boolean {
+  return ev.source === "ari_app" && !isSimulatedEvent(ev);
+}
+
+function eventDigit(ev: CommunicationEvent): string {
+  return ev.digit || (typeof ev.data.digit === "string" ? ev.data.digit : "");
+}
+
+function isLine1ToLine2Forward(ev: CommunicationEvent): boolean {
+  const line = normalizeLineNum(ev.line);
+  return Boolean(
+    eventDigit(ev)
+    && (
+      (
+        ev.type === "dtmf"
+        && line === "2"
+        && ev.data.forwarded_from === "1"
+      )
+      || (
+        ev.type === "route"
+        && line === "1"
+        && ev.data.route === "line1_to_line2"
+        && ev.data.target_line === "2"
+      )
+    ),
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>("setup");
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -213,6 +245,7 @@ function App() {
     const blank = () => ({
       hookLabel: "unknown", hookState: "", dtmfSeq: [] as string[], registered: false,
       lastForwarded: null as string | null,
+      lastForwardedMode: null as "live" | "simulated" | null,
       lastLiveDigit: null as string | null, lastLiveAt: null as string | null,
       liveCount: 0,
     });
@@ -229,11 +262,11 @@ function App() {
         state[ln].dtmfSeq = [...state[ln].dtmfSeq, ev.digit].slice(-30);
         if (ln === "2" && ev.data.forwarded_from === "1") {
           state["2"].lastForwarded = ev.digit;
+          state["2"].lastForwardedMode = isLiveTelephonyEvent(ev) ? "live" : "simulated";
         }
         // A LIVE digit is a real one from the telephony path (ari_app), not a
         // web simulation. This is the evidence that the line actually keyed in.
-        const isLive = ev.source === "ari_app" && ev.data.simulated !== true;
-        if (isLive) {
+        if (isLiveTelephonyEvent(ev)) {
           state[ln].lastLiveDigit = ev.digit;
           state[ln].lastLiveAt = ev.created_at;
           state[ln].liveCount += 1;
@@ -249,32 +282,39 @@ function App() {
   }, [events, summary]);
 
   const liveHandoffEvidence = useMemo(() => {
-    const forwarded = events
+    const liveForwarded = events
       .filter((ev) => {
-        const line = normalizeLineNum(ev.line);
-        return (
-          ev.type === "dtmf"
-          && line === "2"
-          && ev.digit
-          && ev.source === "ari_app"
-          && ev.data.simulated !== true
-          && ev.data.forwarded_from === "1"
-        );
+        return isLine1ToLine2Forward(ev) && isLiveTelephonyEvent(ev);
       })
       .map((ev) => ({
-        digit: ev.digit ?? "",
+        digit: eventDigit(ev),
         created_at: ev.created_at,
         id: ev.id,
       }));
 
-    const latest = forwarded[0] ?? null;
+    const simulatedForwarded = events
+      .filter((ev) => {
+        return isLine1ToLine2Forward(ev) && isSimulatedEvent(ev);
+      })
+      .map((ev) => ({
+        digit: eventDigit(ev),
+        created_at: ev.created_at,
+        id: ev.id,
+      }));
+
+    const latest = liveForwarded.at(-1) ?? null;
+    const latestSimulated = simulatedForwarded.at(-1) ?? null;
     const latestDigit = latest?.digit || null;
     return {
-      count: forwarded.length,
+      count: liveForwarded.length,
       latestDigit,
       latestAt: latest?.created_at ?? null,
       latestId: latest?.id ?? null,
-      hasLive: forwarded.length > 0,
+      hasLive: liveForwarded.length > 0,
+      simulatedCount: simulatedForwarded.length,
+      latestSimulatedDigit: latestSimulated?.digit || null,
+      latestSimulatedAt: latestSimulated?.created_at ?? null,
+      hasSimulated: simulatedForwarded.length > 0,
       fromLine: "1" as const,
       toLine: "2" as const,
     };
@@ -384,15 +424,29 @@ function App() {
               <div className="timeline-evidence-card live-evidence-badge">
                 <CheckCircle2 size={18} />
                 <div className="live-evidence-copy">
-                  <span>LIVE evidence</span>
+                  <span>Line 1 key proof</span>
                   <strong>
-                    Line {liveHandoffEvidence.fromLine} sent {liveHandoffEvidence.latestDigit || "#"} to Line {liveHandoffEvidence.toLine}
+                    LIVE HANDSET CONFIRMED: Line {liveHandoffEvidence.fromLine} forwarded key {liveHandoffEvidence.latestDigit || "#"} toward Line {liveHandoffEvidence.toLine}
                   </strong>
                   <small>
                     {liveHandoffEvidence.count} forwarded event{liveHandoffEvidence.count === 1 ? "" : "s"}
                     {liveHandoffEvidence.latestAt ? ` · ${new Date(liveHandoffEvidence.latestAt).toLocaleTimeString()}` : ""}
                     {" · "}
-                    Line {liveHandoffEvidence.toLine} response not required
+                    Line {liveHandoffEvidence.toLine} response ignored
+                  </small>
+                </div>
+              </div>
+            ) : liveHandoffEvidence.hasSimulated ? (
+              <div className="timeline-evidence-card timeline-evidence-simulated">
+                <TriangleAlert size={18} />
+                <div className="live-evidence-copy">
+                  <span>SIMULATION ONLY</span>
+                  <strong>No physical Line 1 key proof yet; latest simulated L1→L2 digit was {liveHandoffEvidence.latestSimulatedDigit || "#"}</strong>
+                  <small>
+                    {liveHandoffEvidence.simulatedCount} simulated forwarded event{liveHandoffEvidence.simulatedCount === 1 ? "" : "s"}
+                    {liveHandoffEvidence.latestSimulatedAt ? ` · ${new Date(liveHandoffEvidence.latestSimulatedAt).toLocaleTimeString()}` : ""}
+                    {" · "}
+                    Need `ari_app` forwarded DTMF from physical Line 1
                   </small>
                 </div>
               </div>
@@ -401,8 +455,8 @@ function App() {
                 <TriangleAlert size={18} />
                 <div className="live-evidence-copy">
                   <span>LIVE evidence</span>
-                  <strong>No forwarded handset evidence captured yet</strong>
-                  <small>Use the real handset on Line 1, then send # to Line 2.</small>
+                  <strong>No physical Line 1 key proof captured yet</strong>
+                  <small>Use the real handset on Line 1, then press #. Line 2 does not need to answer.</small>
                 </div>
               </div>
             )}
@@ -530,6 +584,7 @@ type LineProtocol = {
   dtmfSeq: string[];
   registered: boolean;
   lastForwarded: string | null;
+  lastForwardedMode: "live" | "simulated" | null;
   lastLiveDigit: string | null;
   lastLiveAt: string | null;
   liveCount: number;
@@ -549,7 +604,7 @@ function LineDTMFPanel({
   const hookKnown = protocol.hookLabel !== "unknown";
   const hasLiveEvidence = protocol.liveCount > 0;
 
-  const [mode, setMode] = useState<"simulate" | "live">("simulate");
+  const [mode, setMode] = useState<"simulate" | "live">("live");
   const [sending, setSending] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
@@ -564,7 +619,7 @@ function LineDTMFPanel({
       );
       const body = await res.json();
       if (body.ok) {
-        setLastResult(mode === "simulate" ? `simulated ${digit}` : `sent ${digit} → live channel`);
+        setLastResult(mode === "simulate" ? `simulated ${digit}` : `sent ${digit} to Asterisk live channel`);
       } else {
         setLastResult(body.reason || body.error || "no active call");
       }
@@ -613,9 +668,14 @@ function LineDTMFPanel({
             </div>
           )}
           {lineNum === "2" && protocol.lastForwarded && (
-            <div className="status-pill ok" title="Last digit forwarded from Line 1">
+            <div
+              className={`status-pill ${protocol.lastForwardedMode === "live" ? "ok" : "sim"}`}
+              title={protocol.lastForwardedMode === "live"
+                ? "Live handset digit forwarded from Line 1"
+                : "Simulated digit forwarded from Line 1"}
+            >
               <ArrowRight size={16} />
-              {`L1→L2: ${protocol.lastForwarded}`}
+              {`${protocol.lastForwardedMode === "live" ? "LIVE" : "SIM"} L1→L2: ${protocol.lastForwarded}`}
             </div>
           )}
         </div>
@@ -634,14 +694,14 @@ function LineDTMFPanel({
               <button
                 className={mode === "live" ? "active" : ""}
                 onClick={() => setMode("live")}
-                title="Send a real DTMF digit into the live call (needs an active call)"
+                title="Send a DTMF digit into the active Asterisk call (needs an active call)"
               >Live</button>
             </div>
           </div>
           <p className="key-legend">
             {mode === "simulate"
               ? "Click a key to simulate transmitting it"
-              : "Click sends a real digit into the active call"}
+              : "Default: sends a digit into the active Asterisk call"}
             {" · last 5 highlighted"}
           </p>
           <div className="keypad">
@@ -754,6 +814,16 @@ function EventRow({ event }: { event: CommunicationEvent }) {
   }).format(new Date(event.created_at));
 
   const lineNum = normalizeLineNum(event.line);
+  const sourceLabel = isLiveTelephonyEvent(event)
+    ? "LIVE HANDSET"
+    : isSimulatedEvent(event)
+    ? "SIMULATION"
+    : "SYSTEM";
+  const sourceClass = isLiveTelephonyEvent(event)
+    ? "source-live"
+    : isSimulatedEvent(event)
+    ? "source-sim"
+    : "source-system";
 
   return (
     <article className={`event-row ${event.type === "fxs_hook" ? "ev-fxs" : ""}`}>
@@ -761,6 +831,7 @@ function EventRow({ event }: { event: CommunicationEvent }) {
       <div className="event-main">
         <div className="event-meta">
           <span>{time}</span>
+          <span className={`source-badge ${sourceClass}`}>{sourceLabel}</span>
           <span>{event.source}</span>
           <span className={`type-badge type-${event.type.replace(/_/g, "-")}`}>{event.type}</span>
           {event.digit && <span className="dtmf-badge">DTMF <strong>{event.digit}</strong></span>}
