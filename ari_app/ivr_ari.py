@@ -45,7 +45,7 @@ _WS_URL = (
 )
 
 # Digit timeout and menu repeat limit
-DIGIT_TIMEOUT = 8.0
+DIGIT_TIMEOUT = 20.0
 MAX_RETRIES = 3
 
 
@@ -189,12 +189,20 @@ class EventPublisher:
 class IVRSession:
     """Manages one active call through the multi-level IVR."""
 
-    def __init__(self, ari: ARIClient, events: EventPublisher, channel_id: str, caller: str) -> None:
+    def __init__(
+        self,
+        ari: ARIClient,
+        events: EventPublisher,
+        channel_id: str,
+        caller: str,
+        dialed_exten: str | None = None,
+    ) -> None:
         self._ari = ari
         self._events = events
         self.channel_id = channel_id
         self.caller = caller
         self.line = _line_for_caller(caller)
+        self.dialed_exten = dialed_exten or ""
         self._digit_futures: dict[str, asyncio.Future] = {}
         self._recording_name: str | None = None
         self._bridge_id: str | None = None
@@ -219,8 +227,8 @@ class IVRSession:
 
     async def _collect_digit(self, sound: str) -> str | None:
         """Play a prompt and wait for a single DTMF digit."""
-        await self._ari.play(self.channel_id, f"sound:{sound}")
         fut = self._make_digit_future()
+        await self._ari.play(self.channel_id, f"sound:{sound}")
         try:
             return await asyncio.wait_for(fut, timeout=DIGIT_TIMEOUT)
         except asyncio.TimeoutError:
@@ -240,6 +248,7 @@ class IVRSession:
             caller=self.caller,
             line=self.line,
         )
+        await self._publish_initial_dialed_digits()
 
         if ENABLE_RECORDING:
             import time
@@ -469,6 +478,28 @@ class IVRSession:
         )
         log.info("forwarded digit=%s line1->line2 channel=%s", digit, self.channel_id)
 
+    async def _publish_initial_dialed_digits(self) -> None:
+        """
+        The HT812 sends the dialed number as the request extension before ARI
+        owns the channel. Publish those digits too, so physical Line 1 dialing
+        is visible even if in-call DTMF is not delivered by the ATA.
+        """
+        if self.line != "1":
+            return
+        for digit in self.dialed_exten:
+            if digit not in "0123456789*#":
+                continue
+            await self._events.publish(
+                "dtmf",
+                f"Dialed extension digit {digit}",
+                channel_id=self.channel_id,
+                caller=self.caller,
+                line=self.line,
+                digit=digit,
+                data={"menu": "dialed_exten", "dialed_exten": self.dialed_exten},
+            )
+            await self._forward_digit_to_line2(digit)
+
     async def _publish_route(self, route: str, digit: str | None = None) -> None:
         await self._events.publish(
             "route",
@@ -491,6 +522,7 @@ class IVRApp:
         channel = event["channel"]
         cid = channel["id"]
         caller = channel.get("caller", {}).get("number", "unknown")
+        dialed_exten = (channel.get("dialplan") or {}).get("exten")
 
         # Skip channels that are outbound dials from connect_endpoint
         if event.get("args"):
@@ -504,7 +536,7 @@ class IVRApp:
             caller=caller,
             line=_line_for_caller(caller),
         )
-        session = IVRSession(self._ari, self._events, cid, caller)
+        session = IVRSession(self._ari, self._events, cid, caller, dialed_exten)
         self._sessions[cid] = session
         asyncio.create_task(session.run())
 
@@ -513,6 +545,15 @@ class IVRApp:
         digit = event.get("digit", "")
         session = self._sessions.get(cid)
         if session:
+            await self._events.publish(
+                "dtmf",
+                f"Raw ARI DTMF digit {digit}",
+                channel_id=cid,
+                caller=session.caller,
+                line=session.line,
+                digit=digit,
+                data={"menu": "raw_ari"},
+            )
             session.deliver_digit(digit)
 
     async def on_hangup(self, event: dict) -> None:
