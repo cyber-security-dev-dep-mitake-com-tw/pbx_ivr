@@ -45,6 +45,44 @@ type Summary = {
   };
 };
 
+type AsteriskEndpoint = {
+  state: string;
+  registered: boolean;
+  channel_count: number;
+  port: number;
+};
+
+type RegistrationAudit = {
+  verdict: string;
+  snapshot_source?: string;
+  device_offline?: boolean;
+  device: {
+    registered: boolean;
+    fxs1_registration_raw?: string | null;
+    fxs2_registration_raw?: string | null;
+    sip_trace_state?: string;
+  };
+  asterisk: {
+    reachable: boolean;
+    both_registered: boolean;
+    endpoints: Record<string, AsteriskEndpoint>;
+    error?: string | null;
+  };
+  sip_log: {
+    found: boolean;
+    offline: boolean;
+    empty?: boolean | null;
+    raw?: string;
+  };
+};
+
+type AuditResponse = {
+  audit: RegistrationAudit;
+  offline?: boolean;
+  snapshot_source?: string;
+  live_error?: { message: string } | null;
+};
+
 type CommunicationEvent = {
   id: string;
   created_at: string;
@@ -84,6 +122,9 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "open" | "closed">("connecting");
   const [lineFilter, setLineFilter] = useState<LineFilter>("all");
+  const [audit, setAudit] = useState<AuditResponse | null>(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [forcing, setForcing] = useState(false);
 
   const allRegistered = Boolean(summary?.ports.port1.registered && summary?.ports.port2.registered);
 
@@ -103,6 +144,33 @@ function App() {
 
   // load backup
   async function loadBackup(){}
+
+  async function loadAudit() {
+    setAuditLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/ht812/status/audit?transport=tcp&live=true`);
+      if (!res.ok) throw new Error(await res.text());
+      setAudit(await res.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load registration audit");
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  async function forceRegister() {
+    setForcing(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/ht812/force-register?transport=tcp`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      await Promise.all([loadSummary(), loadAudit()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Force-register failed");
+    } finally {
+      setForcing(false);
+    }
+  }
 
   async function provisionTwoLine() {
     setProvisioning(true);
