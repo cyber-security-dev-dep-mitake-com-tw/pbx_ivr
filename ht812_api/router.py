@@ -394,7 +394,10 @@ def _registration_audit(
     if isinstance(sip_data, dict):
         if sip_data.get("offline"):
             trace_state = "offline"
-        elif sip_data.get("sip_log_empty") is True:
+        elif sip_data.get("sip_log_empty") is True or _sip_log_is_empty(sip_log_raw):
+            # The HT812 returns {"results":[{"exist":"false"}]} when it has no SIP
+            # trace at all — i.e. the device sent zero SIP packets. Treat as empty,
+            # NOT present, otherwise the verdict wrongly implies traffic occurred.
             trace_state = "empty"
         elif sip_data.get("sip_log_empty") is False:
             trace_state = "present"
@@ -490,6 +493,21 @@ def _registration_audit(
     }
 
 
+def _sip_log_is_empty(text: Any) -> bool:
+    """
+    True when the HT812 SIP trace is effectively empty. The device returns
+    `{"results":[{"exist":"false"}]}` (or whitespace) when it holds no trace —
+    meaning it sent zero SIP packets. A non-empty JSON string is not enough to
+    conclude SIP traffic occurred, so this sentinel must be detected explicitly.
+    """
+    if not isinstance(text, str):
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    return '"exist":"false"' in stripped.replace(" ", "")
+
+
 async def _capture_sip_log(request: Request, *, source: str) -> dict[str, Any]:
     """
     Fetch the HT812 device SIP trace and persist it as a sip_log debug log so the
@@ -498,12 +516,14 @@ async def _capture_sip_log(request: Request, *, source: str) -> dict[str, Any]:
     """
     try:
         text = await _client(request).get_sip_log()
+        empty = _sip_log_is_empty(text)
         payload = {
             "timestamp": _now_iso(),
             "endpoint": "sip_log",
             "captured_by": source,
             "sip_log_raw": text,
-            "sip_log_empty": not bool(text.strip()),
+            "sip_log_empty": empty,
+            "device_sent_no_sip": empty,
             "offline": False,
         }
     except HT812Error as e:
@@ -1356,10 +1376,12 @@ async def sip_log(request: Request):
             },
             "diagnostics": diagnostics,
         }
-    diagnostics = _diagnostics(request, "sip_log", action={"sip_log_empty": not bool(text.strip())})
+    empty = _sip_log_is_empty(text)
+    diagnostics = _diagnostics(request, "sip_log", action={"sip_log_empty": empty})
     return {
         "sip_log_raw": text,
-        "sip_log_empty": not bool(text.strip()),
+        "sip_log_empty": empty,
+        "device_sent_no_sip": empty,
         "offline": False,
         "audit": _registration_audit(),
         "diagnostics": diagnostics,

@@ -419,7 +419,10 @@ physically unreachable (ARP `(incomplete)`), it is physical-layer:
 | `main.py` | 500 responses had **no CORS header** → browser saw opaque CORS error | Global `@app.exception_handler(Exception)` returns JSON 502 **with** `Access-Control-Allow-Origin` |
 | `.env` | `host.docker.internal` written into the device's SIP server field | Added `ASTERISK_SIP_HOST=192.168.2.2` |
 | `router.py` / `main.py` | Stale `get_config_xml` name | Renamed to `save_config_snapshot` everywhere |
-| `force-register` | Transport hardcoded to UDP | `?transport=udp\|tcp\|tls` query param + UI picker |
+| `force-register` / `status/audit` | Defaulted to TLS/UDP; TLS self-signed cert silently blocked REGISTER | Default transport **TCP** (order TCP→TLS→UDP) |
+| `status/audit` | `live=false` default compared against stale backup; no Asterisk-side check | Default `live=true` w/ offline fallback + `snapshot_source` stamp; new `asterisk_client.py` ARI check + three-way verdict |
+| `force-register` / `status/audit` | SIP trace only fetched on demand → audits referenced an unrelated old `sip_log` | Auto-capture device SIP trace per request, correlated into the audit |
+| `ari_app/ivr_ari.py` | No path made Line 1 digits act on Line 2 | `_forward_digit_to_line2()` emits paired route+dtmf events (§6.1) |
 
 ---
 
@@ -467,6 +470,11 @@ python scripts/test_protocol_simulation/simulate_call_flow.py --scenario support
 ```bash
 docker exec asterisk asterisk -rx "pjsip show contacts"
 # Want: 1001/sip:… Reachable  and  1002/sip:… Reachable
+
+# Or get the three-way verdict (device flag vs Asterisk vs config) in one call:
+curl -s 'http://localhost:8000/ht812/status/audit?transport=tcp&live=true' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); a=d['audit']; print(a['verdict'], '| asterisk:', a['asterisk'])"
+# Want verdict: registered_confirmed_both_sides
 ```
 
 ---
@@ -485,7 +493,9 @@ docker exec asterisk asterisk -rx "pjsip show contacts"
 | `ASTERISK_SIP_HOST` (.env) | `192.168.2.2` |
 | SIP extensions | `1001` (FXS1), `1002` (FXS2), pass `Mitake123` |
 | Lockout | 5 failed logins → 5-minute lock |
-| Dashboard | `http://localhost:3000` · API `http://localhost:8000` |
+| Dashboard | `http://localhost:3000` (also `:3002` in dev) · API `http://localhost:8000` |
+| Default SIP transport | **TCP** (first-pass order TCP → TLS → UDP) |
+| One-shot debug blob | `GET /ht812/diag/registration-bundle` (offline-safe) |
 
 ---
 
@@ -504,3 +514,12 @@ docker exec asterisk asterisk -rx "pjsip show contacts"
 9. **No internet in direct-LAN mode** — image pulls/`brew` will fail; hot-patch
    containers with `docker cp` instead of rebuilding.
 10. **`restore_cfg` is stricter than `upload_cfg`** — use `upload_cfg` for XML.
+11. **TLS is not a first-pass registration target** — it needs the HT812 to trust
+    Asterisk's self-signed cert and fails silently. Always get TCP (or UDP) working
+    first, then move to TLS. Defaults are now TCP.
+12. **Trust the Asterisk side, not just the device flag** — P4921/P4922 is the
+    device's *self-report*. `pjsip show contacts` (or the ARI check in
+    `status/audit`) is the ground truth for whether a line is really registered.
+13. **The audit is offline-safe** — with the device tunnel down it still returns a
+    verdict from Asterisk + backups, stamped `offline:true`/`snapshot_source`. Don't
+    read a `latest_backup` snapshot as the current live state.
