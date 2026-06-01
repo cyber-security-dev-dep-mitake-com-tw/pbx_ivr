@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 import structlog
+from asterisk_client import get_registration_contacts
 from events import CommunicationEventIn
 from ht812_client import HT812AuthError, HT812Client, HT812Error
 from metrics import (
@@ -361,13 +362,21 @@ def _registration_audit(
     transport: str | None = None,
     sip_server: str | None = None,
     sip_port: str | None = None,
+    asterisk_state: dict[str, Any] | None = None,
+    captured_sip_log: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     latest_backup = _latest_backup()
     backup_values = _parse_backup_values(latest_backup)
     latest_force = _latest_debug_log("force_register")
     latest_sip_log = _latest_debug_log("sip_log")
     force_data = _read_json_file(latest_force) or {}
-    sip_data = _read_json_file(latest_sip_log) or {}
+    # Prefer a SIP log captured in this same request (correlated by timestamp)
+    # over whatever unrelated sip_log file happens to be newest on disk.
+    if captured_sip_log is not None:
+        sip_data = captured_sip_log
+        latest_sip_log = captured_sip_log.get("debug_log_path") or latest_sip_log
+    else:
+        sip_data = _read_json_file(latest_sip_log) or {}
     force_action = force_data.get("action") if isinstance(force_data, dict) else {}
     force_action = force_action if isinstance(force_action, dict) else {}
     force_readback = force_data.get("readback") if isinstance(force_data, dict) else {}
@@ -392,7 +401,26 @@ def _registration_audit(
         elif isinstance(sip_log_raw, str) and sip_log_raw.strip():
             trace_state = "present"
 
-    if registered:
+    # Asterisk-side truth (does Asterisk actually hold a live contact?).
+    ast = asterisk_state or {}
+    ast_reachable = bool(ast.get("reachable"))
+    ast_both_registered = bool(ast.get("both_registered"))
+
+    # Three-way verdict: device flag (P4921/P4922) vs Asterisk contact state vs
+    # written/expected config. Asterisk is the source of truth when reachable.
+    if ast_reachable:
+        if ast_both_registered:
+            verdict = "registered_confirmed_both_sides" if registered else "asterisk_online_but_device_flag_stale"
+        else:
+            if registered:
+                verdict = "device_says_registered_but_asterisk_has_no_contact"
+            elif force_applied and trace_state == "present":
+                verdict = "sip_trace_present_but_not_registered"
+            elif force_applied:
+                verdict = "configured_but_neither_side_registered"
+            else:
+                verdict = "neither_side_registered"
+    elif registered:
         verdict = "registered"
     elif force_applied and trace_state in ("empty", "offline"):
         verdict = "configured_but_no_register_observed"
