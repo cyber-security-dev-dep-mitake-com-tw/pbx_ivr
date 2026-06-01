@@ -248,6 +248,38 @@ function App() {
     return state;
   }, [events, summary]);
 
+  const liveHandoffEvidence = useMemo(() => {
+    const forwarded = events
+      .filter((ev) => {
+        const line = normalizeLineNum(ev.line);
+        return (
+          ev.type === "dtmf"
+          && line === "2"
+          && ev.digit
+          && ev.source === "ari_app"
+          && ev.data.simulated !== true
+          && ev.data.forwarded_from === "1"
+        );
+      })
+      .map((ev) => ({
+        digit: ev.digit ?? "",
+        created_at: ev.created_at,
+        id: ev.id,
+      }));
+
+    const latest = forwarded[0] ?? null;
+    const latestDigit = latest?.digit || null;
+    return {
+      count: forwarded.length,
+      latestDigit,
+      latestAt: latest?.created_at ?? null,
+      latestId: latest?.id ?? null,
+      hasLive: forwarded.length > 0,
+      fromLine: "1" as const,
+      toLine: "2" as const,
+    };
+  }, [events]);
+
   const filteredEvents = useMemo(() => {
     if (lineFilter === "all") return latestEvents;
     return latestEvents.filter((ev) => normalizeLineNum(ev.line) === lineFilter);
@@ -346,6 +378,34 @@ function App() {
               <Radio size={17} />
               {streamState}
             </div>
+          </div>
+          <div className="timeline-evidence">
+            {liveHandoffEvidence.hasLive ? (
+              <div className="timeline-evidence-card live-evidence-badge">
+                <CheckCircle2 size={18} />
+                <div className="live-evidence-copy">
+                  <span>LIVE evidence</span>
+                  <strong>
+                    Line {liveHandoffEvidence.fromLine} sent {liveHandoffEvidence.latestDigit || "#"} to Line {liveHandoffEvidence.toLine}
+                  </strong>
+                  <small>
+                    {liveHandoffEvidence.count} forwarded event{liveHandoffEvidence.count === 1 ? "" : "s"}
+                    {liveHandoffEvidence.latestAt ? ` · ${new Date(liveHandoffEvidence.latestAt).toLocaleTimeString()}` : ""}
+                    {" · "}
+                    Line {liveHandoffEvidence.toLine} response not required
+                  </small>
+                </div>
+              </div>
+            ) : (
+              <div className="timeline-evidence-card timeline-evidence-empty">
+                <TriangleAlert size={18} />
+                <div className="live-evidence-copy">
+                  <span>LIVE evidence</span>
+                  <strong>No forwarded handset evidence captured yet</strong>
+                  <small>Use the real handset on Line 1, then send # to Line 2.</small>
+                </div>
+              </div>
+            )}
           </div>
           <div className="filter-bar">
             <span>Line:</span>

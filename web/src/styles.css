@@ -493,6 +493,40 @@ dd {
   gap: 10px;
 }
 
+.timeline-evidence {
+  display: grid;
+  margin-bottom: 14px;
+}
+
+.timeline-evidence-card {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid #b9e0cf;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #14532d;
+}
+
+.timeline-evidence-empty {
+  border-color: #f0d3a8;
+  background: #fff9f0;
+  color: #9a5c00;
+}
+
+.timeline-evidence-card svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.timeline-evidence-card small {
+  color: inherit;
+  font-size: 0.77rem;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
 .event-row {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
