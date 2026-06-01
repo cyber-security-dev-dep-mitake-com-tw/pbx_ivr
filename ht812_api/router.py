@@ -490,6 +490,36 @@ def _registration_audit(
     }
 
 
+async def _capture_sip_log(request: Request, *, source: str) -> dict[str, Any]:
+    """
+    Fetch the HT812 device SIP trace and persist it as a sip_log debug log so the
+    registration audit can correlate it with this exact request. Offline-safe:
+    on device error returns an offline marker instead of raising.
+    """
+    try:
+        text = await _client(request).get_sip_log()
+        payload = {
+            "timestamp": _now_iso(),
+            "endpoint": "sip_log",
+            "captured_by": source,
+            "sip_log_raw": text,
+            "sip_log_empty": not bool(text.strip()),
+            "offline": False,
+        }
+    except HT812Error as e:
+        payload = {
+            "timestamp": _now_iso(),
+            "endpoint": "sip_log",
+            "captured_by": source,
+            "sip_log_raw": "",
+            "sip_log_empty": True,
+            "offline": True,
+            "error": {"type": type(e).__name__, "message": str(e)},
+        }
+    payload["debug_log_path"] = _write_debug_log("sip_log", payload)
+    return payload
+
+
 def _write_debug_log(endpoint: str, payload: dict[str, Any]) -> str:
     _DEBUG_DIR.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", endpoint).strip("_") or "ht812"
@@ -792,7 +822,7 @@ async def provision_two_line(request: Request, body: ProvisionTwoLineRequest):
 )
 async def force_register(
     request: Request,
-    transport: str = Query("udp", description="SIP transport: udp, tcp, tls"),
+    transport: str = Query("tcp", description="SIP transport, first-pass order TCP→TLS→UDP: tcp, tls, udp"),
     sip_server: str | None = Query(None, description="SIP server address visible from the HT812"),
     sip_port: str | None = Query(None, description="SIP server port; defaults to 5061 for TLS, 5060 otherwise"),
     reboot: bool = Query(False, description="Reboot the HT812 after writing SIP registration settings"),
@@ -907,6 +937,11 @@ async def force_register(
         )
         readback = {}
 
+    # Capture what the device saw (REGISTER sent? 401? TLS fail? timeout?) and
+    # whether Asterisk actually now holds a contact — correlated to this write.
+    captured_sip_log = await _capture_sip_log(request, source="force_register")
+    asterisk_state = await get_registration_contacts()
+
     transport_label = {"0": "UDP", "1": "TCP", "2": "TLS"}.get(transport_code, transport.upper())
     diagnostics = _diagnostics(
         request,
@@ -924,6 +959,10 @@ async def force_register(
             "write_passwords": write_passwords,
             "password_fields_attempted": password_fields_attempted,
             "password_verification": "not_readable_from_ht812_or_xml; verify through Asterisk REGISTER/auth result",
+            "sip_log_debug_path": captured_sip_log.get("debug_log_path"),
+            "asterisk_reachable": asterisk_state.get("reachable"),
+            "asterisk_both_registered": asterisk_state.get("both_registered"),
+            "asterisk_endpoints": asterisk_state.get("endpoints"),
         },
     )
     redacted_params = _redact_sensitive(params)
@@ -977,7 +1016,7 @@ async def force_register(
 )
 async def diagnostics_report(
     request: Request,
-    transport: str = Query("udp", description="Expected transport to compare: udp, tcp, tls"),
+    transport: str = Query("tcp", description="Expected transport to compare, first-pass order TCP→TLS→UDP: tcp, tls, udp"),
     sip_server: str | None = Query(None, description="Expected SIP server visible from HT812"),
     sip_port: str | None = Query(None, description="Expected SIP port; defaults to 5061 for TLS, 5060 otherwise"),
     live: bool = Query(False, description="When true, also query the HT812. Leave false for offline analysis from backups/debug logs only."),
@@ -1053,10 +1092,10 @@ async def diagnostics_report(
 )
 async def status_audit(
     request: Request,
-    transport: str = Query("udp", description="Expected transport to audit: udp, tcp, tls"),
+    transport: str = Query("tcp", description="Expected transport to audit, first-pass order TCP→TLS→UDP: tcp, tls, udp"),
     sip_server: str | None = Query(None, description="Expected SIP server visible from the HT812"),
     sip_port: str | None = Query(None, description="Expected SIP port; defaults to 5061 for TLS, 5060 otherwise"),
-    live: bool = Query(False, description="When true, also query the HT812 for live values."),
+    live: bool = Query(True, description="When true (default), query the HT812 for live values; falls back to latest backup offline."),
 ):
     transport_key = transport.lower()
     if transport_key not in _TRANSPORT_VALUES:
@@ -1067,19 +1106,33 @@ async def status_audit(
     expected = _expected_registration_values(transport_key, sip_server, sip_port)
     live_values: dict[str, Any] = {}
     live_error: dict[str, Any] | None = None
+    captured_sip_log: dict[str, Any] | None = None
     if live:
         try:
             live_values = await _client(request).get_values([key for key in _SIP_DIAG_KEYS if key not in _WRITE_ONLY_KEYS])
         except HT812Error as e:
             live_error = {"type": type(e).__name__, "message": str(e)}
+        # Capture the device SIP trace alongside this audit (offline-safe).
+        captured_sip_log = await _capture_sip_log(request, source="status_audit")
+
+    # Asterisk-side truth — does Asterisk hold a live contact right now?
+    asterisk_state = await get_registration_contacts()
+
+    # snapshot_source: live values are only trustworthy if the live read succeeded.
+    device_offline = live and live_error is not None
+    snapshot_source = "live" if (live and live_error is None) else "latest_backup"
 
     audit = _registration_audit(
         expected=expected,
-        live_values=live_values,
+        live_values=live_values if live_error is None else None,
         transport=transport_key,
         sip_server=sip_server,
         sip_port=sip_port,
+        asterisk_state=asterisk_state,
+        captured_sip_log=captured_sip_log,
     )
+    audit["snapshot_source"] = snapshot_source
+    audit["device_offline"] = device_offline
     diagnostics = _diagnostics(
         request,
         "status_audit",
@@ -1091,6 +1144,10 @@ async def status_audit(
             "sip_port": sip_port,
             "live_requested": live,
             "live_error": live_error,
+            "snapshot_source": snapshot_source,
+            "asterisk_reachable": asterisk_state.get("reachable"),
+            "asterisk_both_registered": asterisk_state.get("both_registered"),
+            "sip_log_debug_path": captured_sip_log.get("debug_log_path") if captured_sip_log else None,
         },
     )
     return {
@@ -1104,6 +1161,41 @@ async def status_audit(
         "diagnostics": diagnostics,
         "live_requested": live,
         "live_error": live_error,
+        "offline": device_offline,
+        "snapshot_source": snapshot_source,
+    }
+
+
+@router.get(
+    "/diag/registration-bundle",
+    summary="Single offline-safe JSON blob aggregating all registration evidence for AI/CLI inspection",
+)
+async def registration_bundle(request: Request):
+    """
+    Assembles every registration artifact into one blob: the latest force-register
+    debug log, the registration audit (three-way verdict), the latest device SIP
+    trace, and the live Asterisk endpoint state. Runs fully offline — any
+    unreachable source degrades to a marker rather than failing the request.
+    """
+    REQUEST_COUNT.labels(endpoint="registration_bundle").inc()
+    asterisk_state = await get_registration_contacts()
+    latest_force = _latest_debug_log("force_register")
+    latest_sip = _latest_debug_log("sip_log")
+    audit = _registration_audit(asterisk_state=asterisk_state)
+    audit["snapshot_source"] = "latest_backup"
+    return {
+        "generated_at": _now_iso(),
+        "verdict": audit.get("verdict"),
+        "audit": audit,
+        "asterisk": asterisk_state,
+        "latest_force_register": _read_json_file(latest_force) or {},
+        "latest_sip_log": _read_json_file(latest_sip) or {},
+        "debug_logs_dir": str(_DEBUG_DIR),
+        "how_to_read": (
+            "verdict is the headline. audit.asterisk = Asterisk-side contact truth; "
+            "audit.device = HT812 self-reported flags; audit.comparison = written vs expected config; "
+            "audit.sip_log.raw = device SIP trace. All sources are offline-safe."
+        ),
     }
 
 
